@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-libafl = { path = "../LibAFL/crates/libafl" , features = ["tui_monitor", "std"]}
-libafl_bolts = { path = "../LibAFL/crates/libafl_bolts" }
-env_logger = "0.10"
-log = "0.4"
+libafl = { version = "0.15.4", features = ["tui_monitor", "afl_exec_sec", "track_hit_feedbacks", "introspection"] }
+libafl_bolts = { version = "0.15.4", features = ["cli"] }
+clap = { version = "4.6.4", features = ["derive"]}

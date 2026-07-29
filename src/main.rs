@@ -1,13 +1,8 @@
+mod measurement;
 mod openocd;
 
-use std::{
-    borrow::Cow,
-    fs::{read_to_string, write},
-    path::PathBuf,
-    thread,
-    time::Duration,
-};
-
+use clap::Parser;
+use libafl::mutators::{havoc_mutations, HavocScheduledMutator};
 use libafl::{
     corpus::{InMemoryCorpus, OnDiskCorpus},
     events::SimpleEventManager,
@@ -16,58 +11,45 @@ use libafl::{
     fuzzer::{Fuzzer, StdFuzzer},
     inputs::{BytesInput, HasTargetBytes},
     monitors::NopMonitor,
-    mutators::{MutationResult, NopMutator},
     schedulers::QueueScheduler,
     stages::mutational::StdMutationalStage,
     state::StdState,
     Error,
 };
-
-use libafl_bolts::{
-    current_nanos,
-    rands::StdRand,
-    tuples::tuple_list,
-    AsSlice,
-    Named,
-};
-
+use libafl_bolts::{current_nanos, rands::StdRand, tuples::tuple_list, AsSlice, Named};
+use measurement::{FileMeasurement, Measurement};
+use std::{borrow::Cow, fs::write, path::PathBuf, thread, time::Duration};
 use openocd::OpenOcd;
 
-trait Measurement {
-    fn measure(&mut self) -> f64;
+#[derive(Parser, Debug)]
+#[command(version, long_version = None, about, long_about = None)]
+struct Args{
+    /// Path to executable to fuzz
+    #[arg(short, long)]
+    executable: PathBuf,
+
+    /// Path to assembly environment
+    #[arg(short, long)]
+    assembly_environment: PathBuf,
+
+    /// Path to atndecode
+    #[arg(short, long)]
+    atndecode_path: PathBuf,
+
+    /// Directory of best snippets
+    #[arg(short, long)]
+    solutions_path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
-struct FileMeasurement {
-    path: String,
-}
-
-impl FileMeasurement {
-    fn new(path: &str) -> Self {
-        Self {
-            path: path.to_string(),
-        }
-    }
-}
-
-impl Measurement for FileMeasurement {
-    fn measure(&mut self) -> f64 {
-        match read_to_string(&self.path) {
-            Ok(s) => s.trim().parse::<f64>().unwrap_or(0.0),
-            Err(_) => 0.0,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct NumericFeedback {
+struct NumericFeedback<M: Measurement> {
     best: f64,
-    measurement: FileMeasurement,
+    measurement: M,
     name: Cow<'static, str>,
 }
 
-impl NumericFeedback {
-    fn new(measurement: FileMeasurement) -> Self {
+impl<M: Measurement> NumericFeedback<M> {
+    fn new(measurement: M) -> Self {
         Self {
             best: f64::MIN,
             measurement,
@@ -76,15 +58,15 @@ impl NumericFeedback {
     }
 }
 
-impl Named for NumericFeedback {
+impl<M: Measurement> Named for NumericFeedback<M> {
     fn name(&self) -> &Cow<'static, str> {
         &self.name
     }
 }
 
-impl<S> StateInitializer<S> for NumericFeedback {}
+impl<S, M: Measurement> StateInitializer<S> for NumericFeedback<M> {}
 
-impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
+impl<EM, I, OT, S, M: Measurement> Feedback<EM, I, OT, S> for NumericFeedback<M> {
     fn is_interesting(
         &mut self,
         _state: &mut S,
@@ -103,31 +85,34 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
             Ok(false)
         }
     }
+
+    fn last_result(&self) -> Result<bool, Error> {
+        Ok(false)
+    }
 }
 
 fn main() -> Result<(), Error> {
-    std::fs::create_dir_all("solutions").expect("Failed to create solutions directory");
+    let args = Args::parse();
 
-    let binary_path = "testcases/program.elf";
+    if args.solutions_path.exists() && !args.solutions_path.is_dir() {
+        panic!("Solutions path exists but is not a directory");
+    }
+    std::fs::create_dir_all(&args.solutions_path).expect("Failed to create solutions directory.");
+
+    let binary_path = args.executable;
 
     let program_start_addr: u32 = 0x80000000;
 
-    // Assumed RAM address where fuzz input will be written.
-    // This must be a valid writable RAM address on the real target.
-    // The target program must read from this same address.
-    let input_addr: u32 = 0x80010000;
-
     // Connect to OpenOCD only once.
-    let mut openocd =
-        OpenOcd::connect("127.0.0.1:6666").expect("Could not connect to OpenOCD");
+    let mut openocd = OpenOcd::new("127.0.0.1:6666").expect("Could not connect to OpenOCD.");
 
     // Load ELF program using OpenOCD `load`.
     openocd
-        .load_program(binary_path, program_start_addr)
-        .expect("Failed to load program");
+        .load_program(&binary_path, program_start_addr)
+        .expect("Failed to load program.");
 
     // Measure idle power before running.
-    let mut idle_measurement = FileMeasurement::new("power.txt");
+    let idle_measurement = FileMeasurement::new("power.txt");
     let idle_power = idle_measurement.measure();
     println!("Idle power: {}", idle_power);
 
@@ -136,27 +121,21 @@ fn main() -> Result<(), Error> {
 
     thread::sleep(Duration::from_millis(100));
 
-    let mut running_measurement = FileMeasurement::new("power.txt");
+    let running_measurement = FileMeasurement::new("power.txt");
     let running_power = running_measurement.measure();
     println!("Running power: {}", running_power);
 
     let rand = StdRand::with_seed(current_nanos());
 
     let corpus = InMemoryCorpus::<BytesInput>::new();
-    let solutions = OnDiskCorpus::new(PathBuf::from("solutions"))?;
+    let solutions = OnDiskCorpus::new(args.solutions_path)?;
 
     let measurement = FileMeasurement::new("power.txt");
     let mut feedback = NumericFeedback::new(measurement);
 
     let mut objective = ();
 
-    let mut state = StdState::new(
-        rand,
-        corpus,
-        solutions,
-        &mut feedback,
-        &mut objective,
-    )?;
+    let mut state = StdState::new(rand, corpus, solutions, &mut feedback, &mut objective)?;
 
     let scheduler = QueueScheduler::new();
 
@@ -177,12 +156,6 @@ fn main() -> Result<(), Error> {
 
         if let Err(e) = openocd.reset_init() {
             eprintln!("OpenOCD reset init failed: {}", e);
-            return ExitKind::Crash;
-        }
-
-        // Write fuzz input into target RAM.
-        if let Err(e) = openocd.write_input_to_ram(input_addr, data) {
-            eprintln!("Writing fuzz input to target RAM failed: {}", e);
             return ExitKind::Crash;
         }
 
@@ -212,16 +185,11 @@ fn main() -> Result<(), Error> {
         &mut manager,
     )?;
 
-    let mutator = NopMutator::new(MutationResult::Skipped);
+    let mutator = HavocScheduledMutator::new(havoc_mutations());
     let stage = StdMutationalStage::new(mutator);
     let mut stages = tuple_list!(stage);
 
-fuzzer.fuzz_loop(
-    &mut stages,
-    &mut executor,
-    &mut state,
-    &mut manager,
-)?;
+    fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut manager)?;
 
     Ok(())
 }
