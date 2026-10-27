@@ -1,5 +1,5 @@
 use crate::feedback::Shared;
-use crate::measurement::{Measurement, MeasurementPhase};
+use crate::measurement::Measurement;
 use crate::openocd::OpenOcd;
 use crate::snippet::SnippetBuilder;
 use libafl::{
@@ -15,12 +15,12 @@ const MAX_MEASUREMENT_FAILURES: u32 = 5;
 /// Number of consecutive target failures (e.g. crashing snippets) tolerated before aborting.
 const MAX_TARGET_FAILURES: u32 = 10;
 
-/// Runs one fuzz input on the target and records `running - idle` in `shared`.
+/// Runs one fuzz input on the target and records the scope's running-minus-idle delta in `shared`.
 pub struct Harness {
     pub openocd: OpenOcd,
     /// Decodes and builds each input into an ELF.
     pub builder: SnippetBuilder,
-    /// Source of the idle and running readings.
+    /// Scope measurement of the running-minus-idle delta.
     pub measurement: Box<dyn Measurement>,
     /// Channel to the feedback (delta and fatal errors).
     pub shared: Rc<Shared>,
@@ -59,7 +59,7 @@ impl Harness {
         }
     }
 
-    /// Builds, loads and measures one input; the result goes to `shared`.
+    /// Builds, loads, and measures one input; the result goes to `shared`.
     pub fn run(&mut self, input: &BytesInput) -> ExitKind {
         let bytes = input.target_bytes();
         let data = bytes.to_slice();
@@ -77,8 +77,8 @@ impl Harness {
             return self.target_failed("loading the program", e);
         }
 
-        // Idle measurement: target is halted after reset.
-        let idle = self.measurement.measure(MeasurementPhase::Idle);
+        // Idle capture: target is halted after reset.
+        let idle = self.measurement.capture_idle();
 
         if let Err(e) = self.openocd.resume() {
             return self.target_failed("resume", e);
@@ -87,17 +87,15 @@ impl Harness {
         // Give the target some time to execute before measuring.
         thread::sleep(self.settle);
 
-        match (idle, self.measurement.measure(MeasurementPhase::Run)) {
-            (Ok(idle), Ok(running)) => {
+        match idle.and_then(|()| self.measurement.measure_delta()) {
+            Ok(delta) => {
                 self.failures = 0;
                 self.target_failures = 0;
-                tracing::debug!("idle={idle} running={running} delta={}", running - idle);
-                self.shared.delta.set(Some(running - idle));
+                tracing::debug!("delta={delta}");
+                self.shared.delta.set(Some(delta));
             }
-            (idle, running) => {
-                for e in [idle.err(), running.err()].into_iter().flatten() {
-                    tracing::error!("Measurement failed: {}", e);
-                }
+            Err(e) => {
+                tracing::error!("Measurement failed: {}", e);
                 self.failures += 1;
                 if self.failures >= MAX_MEASUREMENT_FAILURES {
                     return self.fatal(format!(

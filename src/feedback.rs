@@ -14,13 +14,13 @@ use std::{
 /// State shared between the harness and the feedback.
 #[derive(Debug, Default)]
 pub struct Shared {
-    /// `running - idle` of the last run; `None` if it was not measured.
+    /// Running-minus-idle delta (F1) of the last run; `None` if it was not measured.
     pub delta: Cell<Option<f64>>,
     /// Unrecoverable harness error; makes the next `is_interesting` abort the fuzz loop.
     pub fatal: RefCell<Option<String>>,
 }
 
-/// Scores each run by the delta (running - idle) that the harness stores in `shared`.
+/// Scores each run by the delta (F1, running minus idle) that the harness stores in `shared`.
 /// A fatal harness error stored there aborts the fuzz loop.
 #[derive(Clone, Debug)]
 pub struct NumericFeedback {

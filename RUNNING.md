@@ -98,7 +98,7 @@ See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
 The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
-Inputs with a new best `running - idle` delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name.
+Inputs with a new best F1 delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name.
 
 ## Logging
 
@@ -118,7 +118,7 @@ Builds need the NI-VISA library; `.cargo/config.toml` sets `LIB_VISA_PATH` (adju
 
 Arm/acquire commands block until the scope has captured a full acquisition, so they use `--scope-acquire-timeout-ms` (default 30000). It must exceed the acquisition time. All other queries use `--scope-timeout-ms` (default 5000). A missed deadline is reported as a timeout and the scope buffers are cleared.
 
-The idle level is measured after the target is reset and halted. The program is then resumed and, after `--settle-ms`, the running level is measured. The score is `running - idle`.
+The idle level is captured (stored in M1, not read back) after the target is reset and halted. The program is then resumed and, after `--settle-ms`, the running level is captured and F1 is read once. F1 is the difference between the running and idle level, and is the score.
 
 ## Configuration file
 
