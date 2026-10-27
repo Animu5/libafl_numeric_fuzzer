@@ -1,4 +1,10 @@
-use std::{fmt, io, path::PathBuf};
+use std::{
+    fmt, io,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+    thread,
+};
 
 #[derive(Debug)]
 pub enum BuildError {
@@ -61,16 +67,97 @@ impl SnippetBuilder {
         Ok(elf)
     }
 
-    /// Runs `atndecode` on the bitstream and writes the assembly the Makefile consumes.
-    fn decode(&self, _bitstream: &[u8]) -> Result<(), BuildError> {
-        let _ = &self.atndecode_path;
-        // TODO: port the decode flow from the other project.
-        Err(BuildError::Decode("not implemented".into()))
+    /// Pipes the bitstream into `atndecode` and writes its stdout to `src/snippet.S`.
+    fn decode(&self, bitstream: &[u8]) -> Result<(), BuildError> {
+        let mut child = Command::new(&self.atndecode_path)
+            .current_dir(&self.assembly_environment)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        // Write from a thread so a full stdout pipe cannot deadlock us; dropping stdin sends EOF.
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        let data = bitstream.to_vec();
+        let writer = thread::spawn(move || stdin.write_all(&data));
+
+        let out = child.wait_with_output()?;
+        // The decoder may exit without reading all input; a broken pipe is then not an error.
+        match writer.join().expect("stdin writer panicked") {
+            Err(e) if e.kind() != io::ErrorKind::BrokenPipe => return Err(e.into()),
+            _ => {}
+        }
+
+        if !out.status.success() {
+            return Err(BuildError::Decode(format!(
+                "{}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+
+        let source = self.assembly_environment.join("src").join("snippet.S");
+        std::fs::write(source, &out.stdout)?;
+        Ok(())
     }
 
     /// Runs `make` in the assembly environment.
     fn make(&self) -> Result<(), BuildError> {
-        // TODO: port the make invocation from the other project.
-        Err(BuildError::Make("not implemented".into()))
+        let out = Command::new("make")
+            .current_dir(&self.assembly_environment)
+            .output()?;
+        if !out.status.success() {
+            return Err(BuildError::Make(format!(
+                "{}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Existing binaries stand in for the decoder; freshly written scripts race with
+    // parallel tests on "Text file busy".
+    fn env(decoder: &str, makefile: &str) -> (PathBuf, SnippetBuilder) {
+        let dir = std::env::temp_dir().join(format!("snippet_test_{}", rand_id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Makefile"), makefile).unwrap();
+        (dir.clone(), SnippetBuilder::new(dir, decoder.into()))
+    }
+
+    fn rand_id() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    }
+
+    #[test]
+    fn builds_from_stdin() {
+        let (dir, mut b) = env("/bin/cat", "snippet.elf: src/snippet.S\n\tcp $< $@\n");
+        let elf = b.build(b"nop\n").unwrap();
+        assert_eq!(std::fs::read(elf).unwrap(), b"nop\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn decode_failure_is_reported() {
+        let (dir, mut b) = env("/bin/false", "all:\n\ttrue\n");
+        assert!(matches!(b.build(b"x"), Err(BuildError::Decode(_))));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_failure_leaves_no_stale_elf() {
+        let (dir, mut b) = env("/bin/cat", "all:\n\tfalse\n");
+        std::fs::write(dir.join("snippet.elf"), b"old").unwrap();
+        assert!(matches!(b.build(b"x"), Err(BuildError::Make(_))));
+        assert!(!dir.join("snippet.elf").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
