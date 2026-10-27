@@ -16,9 +16,7 @@ This should later be replaced with a LibAFL mutator or a custom mutator that mat
 
 ## Complete the Power Measurement
 
-The current version reads the measurement from `power.txt`.
-
-The original goal was to read the value directly from the power measurement device. This still needs to be implemented using a suitable VISA library.
+The VISA connection (`src/scope.rs`) exists, but `ScopeMeasurement::measure` in `src/measurement.rs` still has to be implemented.
 
 The remaining work includes:
 
@@ -61,7 +59,7 @@ This is simple, but it can be slow for larger inputs. A bulk memory-write method
 
 ## Define the Final Measurement Method
 
-The current feedback uses the latest value from `power.txt`.
+The current feedback uses the difference between the running and idle measurement (mean, via the scope).
 
 The final setup should clearly define whether the fuzzer should maximize:
 

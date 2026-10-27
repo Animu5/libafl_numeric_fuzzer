@@ -18,13 +18,11 @@ The current implementation:
 * writes fuzz input bytes into target RAM;
 * resets the program counter before each execution;
 * resumes target execution;
-* reads a numeric measurement from `power.txt`;
+* reads a numeric measurement from the oscilloscope (VISA);
 * treats an input as interesting when it produces a value higher than the previous best value;
 * creates a `solutions/` directory and configures it as the LibAFL solutions corpus.
 
-The current corpus does not yet contain a seed input. Therefore, the fuzzing loop cannot perform useful iterations until an initial input is added.
-
-The current implementation also uses `NopMutator`, so even after a seed input is added, inputs will not yet be modified.
+The corpus starts with a seed input (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Each input is written to target RAM before the run.
 
 ## Project Files
 
@@ -50,7 +48,7 @@ When the program starts, it connects to OpenOCD at:
 
 It then loads the target program from:
 
-`testcases/program.elf`
+`<assembly-environment>/snippet.elf`
 
 The current code uses:
 
@@ -62,10 +60,10 @@ Before the fuzzing loop starts, the program:
 1. resets and initializes the target;
 2. loads the ELF program;
 3. sets the program counter to `0x80000000`;
-4. reads an idle measurement from `power.txt`;
+4. reads an idle measurement from the oscilloscope;
 5. resumes the target;
 6. waits for 100 milliseconds;
-7. reads a running measurement from `power.txt`.
+7. reads a running measurement from the oscilloscope.
 
 Once a seed input is available, each fuzzing iteration is intended to:
 
@@ -75,7 +73,7 @@ Once a seed input is available, each fuzzing iteration is intended to:
 4. set the program counter;
 5. resume the target;
 6. wait for 100 milliseconds;
-7. after the target execution finishes, the numeric feedback reads the latest value from `power.txt`.
+7. after the target execution finishes, the numeric feedback reads the latest value from the oscilloscope.
 
 If the new measurement is higher than the previous best value, the input is treated as interesting and added to the in-memory corpus.
 
@@ -85,14 +83,10 @@ The current version is not yet a complete end-to-end setup.
 
 The main limitations are:
 
-* the power value is read from `power.txt` instead of directly from the measurement device;
+* `ScopeMeasurement::measure` (arming and reading the scope) still has to be ported;
 * the correct OpenOCD interface and target configuration still need to be selected;
 * the hardware addresses still need to be confirmed on the final target;
 * the target program must be modified or confirmed to read input from `0x80010000`;
-* the fuzzer currently uses `NopMutator`, so it does not generate modified inputs;
-* the input corpus starts empty;
-* interesting inputs are not currently persisted to the `solutions/` directory;
-* OpenOCD textual error responses are not currently checked;
 * the full setup has not been tested on the final hardware.
 
 The remaining work is listed in `TODO.md`.
