@@ -91,7 +91,7 @@ impl Harness {
             Ok(delta) => {
                 self.failures = 0;
                 self.target_failures = 0;
-                tracing::debug!("delta={delta}");
+                tracing::info!("Current measurement: {delta} W.");
                 self.shared.delta.set(Some(delta));
             }
             Err(e) => {
