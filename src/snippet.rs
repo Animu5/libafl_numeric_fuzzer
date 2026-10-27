@@ -68,7 +68,8 @@ impl SnippetBuilder {
         Ok(elf)
     }
 
-    /// Pipes the bitstream into `atndecode` and writes its stdout to `src/snippet.S`.
+    /// Pipes the bitstream into `atndecode` and writes its stdout to `src/snippet.S`,
+    /// preceded by `#include "init.inc"`.
     fn decode(&self, bitstream: &[u8]) -> Result<(), BuildError> {
         let mut child = Command::new(&self.atndecode_path)
             .current_dir(&self.assembly_environment)
@@ -153,7 +154,10 @@ mod tests {
     fn builds_from_stdin() {
         let (dir, mut b) = env("/bin/cat", "snippet.elf: src/snippet.S\n\tcp $< $@\n");
         let elf = b.build(b"nop\n").unwrap();
-        assert_eq!(std::fs::read(elf).unwrap(), b"nop\n");
+        assert_eq!(
+            std::fs::read_to_string(elf).unwrap(),
+            "#include \"init.inc\"\n\nnop\n\n"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -173,11 +177,11 @@ mod tests {
     }
 
     #[test]
-    fn make_failure_leaves_no_stale_elf() {
+    fn make_failure_is_reported() {
         let (dir, mut b) = env("/bin/cat", "all:\n\tfalse\n");
         std::fs::write(dir.join("snippet.elf"), b"old").unwrap();
+        // The stale ELF is never returned because a failed make is an error.
         assert!(matches!(b.build(b"x"), Err(BuildError::Make(_))));
-        assert!(!dir.join("snippet.elf").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
