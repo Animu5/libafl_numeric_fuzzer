@@ -102,7 +102,7 @@ Inputs with a new best `running - idle` delta are logged as `New best measuremen
 
 ## Logging
 
-Logs go to `fuzzer.log` (override with `--log-file`). Filter per module with `RUST_LOG`, e.g. `RUST_LOG=warn,libafl_fuzzer::openocd=debug`.
+Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on every start. Filter per module with `RUST_LOG`, e.g. `RUST_LOG=warn,libafl_fuzzer::openocd=debug`.
 
 ## Oscilloscope (VISA)
 
