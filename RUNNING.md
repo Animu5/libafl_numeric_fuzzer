@@ -123,7 +123,7 @@ Running power: 0.0
 
 ## Current Fuzzing Behaviour
 
-The corpus starts with `--seed` (default: 16 zero bytes), inputs are mutated with havoc mutators and written to target RAM (`--input-addr`). Inputs with a new best measurement are saved to the solutions directory with the delta in the file name. OpenOCD errors and repeated measurement failures abort the run.
+The corpus starts with `--seed` (default: 16 zero bytes), inputs are mutated with havoc mutators and decoded and built into the target program. Inputs with a new best measurement are saved to the solutions directory with the delta in the file name. OpenOCD errors and repeated measurement failures abort the run.
 
 When an input produces a new highest measurement, the program logs the following when an input produces a new highest measurement:
 
