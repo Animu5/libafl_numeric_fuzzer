@@ -38,6 +38,10 @@ pub struct SnippetBuilder {
     atndecode_path: PathBuf,
     /// Toolchain directory exported to `make` as `RISCV`.
     riscv_toolpath: PathBuf,
+    /// If set, every decoded snippet is also saved here as `NNNNNN.S` (for debugging).
+    archive_dir: Option<PathBuf>,
+    /// Number of snippets decoded so far, used for the archive file names.
+    count: u64,
 }
 
 impl SnippetBuilder {
@@ -50,7 +54,16 @@ impl SnippetBuilder {
             assembly_environment,
             atndecode_path,
             riscv_toolpath,
+            archive_dir: None,
+            count: 0,
         }
+    }
+
+    /// Also saves every decoded snippet in `dir` (created if missing).
+    pub fn with_archive(mut self, dir: PathBuf) -> io::Result<Self> {
+        std::fs::create_dir_all(&dir)?;
+        self.archive_dir = Some(dir);
+        Ok(self)
     }
 
     /// Decodes `bitstream`, builds the snippet, and returns the path to the fresh ELF.
@@ -80,7 +93,7 @@ impl SnippetBuilder {
 
     /// Pipes the bitstream into `atndecode` and writes its stdout to `src/snippet.S`,
     /// preceded by `#include "init.inc"`.
-    fn decode(&self, bitstream: &[u8]) -> Result<(), BuildError> {
+    fn decode(&mut self, bitstream: &[u8]) -> Result<(), BuildError> {
         let mut child = Command::new(&self.atndecode_path)
             .current_dir(&self.assembly_environment)
             .stdin(Stdio::piped())
@@ -114,14 +127,19 @@ impl SnippetBuilder {
             )));
         }
 
+        let assembly = format!(
+            "#include \"init.inc\"\n\n{}\n",
+            String::from_utf8_lossy(&out.stdout)
+        );
         let source = self.assembly_environment.join("src").join("snippet.S");
-        std::fs::write(
-            source,
-            format!(
-                "#include \"init.inc\"\n\n{}\n",
-                String::from_utf8_lossy(&out.stdout)
-            ),
-        )?;
+        std::fs::write(source, &assembly)?;
+
+        self.count += 1;
+        if let Some(dir) = &self.archive_dir {
+            let copy = dir.join(format!("{:06}.S", self.count));
+            std::fs::write(&copy, &assembly)?;
+            tracing::debug!("Saved snippet to {}", copy.display());
+        }
         Ok(())
     }
 
@@ -188,6 +206,22 @@ mod tests {
         let (dir, mut b) = env("/bin/cat", "snippet.elf:\n\techo $$RISCV > $@\n");
         let elf = b.build(b"x").unwrap();
         assert_eq!(std::fs::read_to_string(elf).unwrap().trim(), "/opt/riscv");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn archive_keeps_every_snippet() {
+        let (dir, b) = env("/bin/cat", "snippet.elf:\n\ttouch $@\n");
+        let archive = dir.join("archive");
+        let mut b = b.with_archive(archive.clone()).unwrap();
+        b.build(b"one").unwrap();
+        b.build(b"two").unwrap();
+        assert!(std::fs::read_to_string(archive.join("000001.S"))
+            .unwrap()
+            .contains("one"));
+        assert!(std::fs::read_to_string(archive.join("000002.S"))
+            .unwrap()
+            .contains("two"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

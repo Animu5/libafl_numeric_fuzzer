@@ -36,6 +36,10 @@ pub struct Args {
     #[arg(short, long)]
     solutions_path: Option<PathBuf>,
 
+    /// Directory where every decoded snippet is saved as NNNNNN.S, for debugging (default: off)
+    #[arg(long)]
+    snippet_dir: Option<PathBuf>,
+
     /// Initial input file, or a directory whose files are all used as seeds (default: 16 zero bytes)
     #[arg(long)]
     seed: Option<PathBuf>,
@@ -76,6 +80,7 @@ pub struct Config {
     pub atndecode_path: PathBuf,
     pub riscv_toolpath: PathBuf,
     pub solutions_path: PathBuf,
+    pub snippet_dir: Option<PathBuf>,
     pub seed: Option<PathBuf>,
     pub log_file: PathBuf,
     pub openocd_addr: String,
@@ -127,6 +132,7 @@ impl Args {
                 "solutions-path",
                 self.solutions_path.or(file.solutions_path),
             ),
+            snippet_dir: self.snippet_dir.or(file.snippet_dir),
             seed: self.seed.or(file.seed),
             log_file: self
                 .log_file
