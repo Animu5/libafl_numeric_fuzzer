@@ -5,6 +5,7 @@ mod logging;
 mod measurement;
 mod openocd;
 mod scope;
+mod snippet;
 
 use clap::Parser;
 use cli::Args;
@@ -27,13 +28,15 @@ use libafl_bolts::{current_nanos, rands::StdRand, tuples::tuple_list};
 use measurement::{Measurement, ScopeMeasurement};
 use openocd::OpenOcd;
 use scope::Scope;
+use snippet::SnippetBuilder;
 use std::{path::Path, rc::Rc, time::Duration};
 
+/// Returns an error mapper that prefixes the message with `what`.
 fn context<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
     move |e| Error::illegal_state(format!("{what}: {e}"))
 }
 
-/// Loads the seed file, or every regular non-hidden file in the seed directory (sorted by name).
+/// Loads the seed file or every regular non-hidden file in the seed directory (sorted by name).
 /// Without a path, a single 16-byte zero input is used.
 fn load_seeds(path: Option<&Path>) -> Result<Vec<BytesInput>, Error> {
     let Some(path) = path else {
@@ -71,6 +74,7 @@ fn load_seeds(path: Option<&Path>) -> Result<Vec<BytesInput>, Error> {
         .collect()
 }
 
+/// Wires up OpenOCD, the scope, the LibAFL components and runs the fuzz loop.
 fn main() -> Result<(), Error> {
     let args = Args::parse();
 
@@ -91,28 +95,26 @@ fn main() -> Result<(), Error> {
     std::fs::create_dir_all(&config.solutions_path)
         .map_err(context("Creating solutions directory"))?;
 
-    // Connect to OpenOCD only once and load the ELF program.
-    let mut openocd =
+    // Connect to OpenOCD once; the harness loads a freshly built ELF for every input.
+    let openocd =
         OpenOcd::new(&config.openocd_addr).map_err(context("Could not connect to OpenOCD"))?;
-    openocd
-        .load_program(&config.executable)
-        .map_err(context("Failed to load program"))?;
 
     let scope = Scope::connect(
         &config.scope_resource,
         Duration::from_millis(config.scope_timeout_ms),
     )
     .map_err(context("Could not connect to scope"))?;
-    let measurement: Box<dyn Measurement> = Box::new(ScopeMeasurement::new(scope));
+    let measurement: Box<dyn Measurement> =
+        Box::new(ScopeMeasurement::new(scope).map_err(context("Could not configure scope"))?);
 
     let seeds = load_seeds(config.seed.as_deref())?;
 
     let shared = Rc::new(Shared::default());
     let mut harness = Harness {
         openocd,
+        builder: SnippetBuilder::new(config.assembly_environment, config.atndecode_path),
         measurement,
         shared: shared.clone(),
-        input_addr: config.input_addr,
         settle: Duration::from_millis(config.settle_ms),
         failures: 0,
     };

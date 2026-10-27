@@ -2,14 +2,6 @@ use clap::{CommandFactory, Parser};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-fn parse_addr(s: &str) -> Result<u32, String> {
-    match s.strip_prefix("0x") {
-        Some(h) => u32::from_str_radix(h, 16),
-        None => s.parse(),
-    }
-    .map_err(|e| e.to_string())
-}
-
 /// Command-line arguments. Every setting can also be given in the TOML file passed
 /// with `--config` (same names with underscores, e.g. `openocd_addr = "..."`).
 /// Command-line values take precedence over the file.
@@ -52,10 +44,6 @@ pub struct Args {
     #[arg(long)]
     openocd_addr: Option<String>,
 
-    /// Target RAM address the fuzz input is written to, decimal or 0x-hex (default: 0x80010000)
-    #[arg(long, value_parser = parse_addr)]
-    input_addr: Option<u32>,
-
     /// VISA resource string of the oscilloscope (e.g. USB0::0x05FF::...::INSTR); see --list-scopes
     #[arg(long)]
     scope_resource: Option<String>,
@@ -72,12 +60,12 @@ pub struct Args {
 /// Fully resolved settings (CLI > config file > defaults).
 #[derive(Debug)]
 pub struct Config {
-    pub executable: PathBuf,
+    pub assembly_environment: PathBuf,
+    pub atndecode_path: PathBuf,
     pub solutions_path: PathBuf,
     pub seed: Option<PathBuf>,
     pub log_file: PathBuf,
     pub openocd_addr: String,
-    pub input_addr: u32,
     pub scope_resource: String,
     pub scope_timeout_ms: u64,
     pub settle_ms: u64,
@@ -108,14 +96,14 @@ impl Args {
             "assembly-environment",
             self.assembly_environment.or(file.assembly_environment),
         );
-        // Not used by the fuzzer yet but remains mandatory.
-        require(
+        let atndecode_path = require(
             "atndecode-path",
             self.atndecode_path.or(file.atndecode_path),
         );
 
         Config {
-            executable: assembly_environment.join("snippet.elf"),
+            assembly_environment,
+            atndecode_path,
             solutions_path: require(
                 "solutions-path",
                 self.solutions_path.or(file.solutions_path),
@@ -129,7 +117,6 @@ impl Args {
                 .openocd_addr
                 .or(file.openocd_addr)
                 .unwrap_or_else(|| "127.0.0.1:6666".into()),
-            input_addr: self.input_addr.or(file.input_addr).unwrap_or(0x8001_0000),
             scope_resource: self
                 .scope_resource
                 .or(file.scope_resource)
@@ -145,6 +132,7 @@ impl Args {
     }
 }
 
+/// Reads and parses a TOML config file.
 fn load_file(path: &Path) -> Result<Args, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("Reading {}: {e}", path.display()))?;

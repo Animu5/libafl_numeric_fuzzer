@@ -4,6 +4,7 @@ use std::net::{Shutdown, TcpStream};
 use std::path::Path;
 use std::time::Duration;
 
+/// Client for OpenOCD's Tcl port.
 #[derive(Debug)]
 pub struct OpenOcd {
     reader: BufReader<TcpStream>,
@@ -17,9 +18,12 @@ impl Drop for OpenOcd {
 }
 
 impl OpenOcd {
+    /// Tcl port message terminator, appended to commands and ending every response.
     const TOKEN: u8 = 0x1a;
+    /// Socket read/write timeout.
     const TIMEOUT: Duration = Duration::from_secs(60);
 
+    /// Connects to OpenOCD at `addr` (host:port).
     pub fn new(addr: &str) -> io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
         stream.set_read_timeout(Some(Self::TIMEOUT))?;
@@ -31,6 +35,7 @@ impl OpenOcd {
         })
     }
 
+    /// Runs a Tcl command and returns its output; Tcl errors become `Err`.
     pub fn send_command(&mut self, command: &str) -> io::Result<String> {
         if command.contains(Self::TOKEN as char) {
             tracing::error!("Command is malformed!");
@@ -53,6 +58,7 @@ impl OpenOcd {
         }
     }
 
+    /// Sends a command followed by the terminator.
     fn send(&mut self, command: &str) -> io::Result<()> {
         let full_command = format!("{}{}", command, Self::TOKEN as char);
         self.stream.write_all(full_command.as_bytes())?;
@@ -60,6 +66,7 @@ impl OpenOcd {
         Ok(())
     }
 
+    /// Reads one response up to the terminator.
     fn recv(&mut self) -> Result<String, io::Error> {
         let mut response = Vec::new();
 
@@ -77,11 +84,13 @@ impl OpenOcd {
         Ok(String::from_utf8_lossy(&response).into_owned())
     }
 
+    /// Resets the target and halts it (`reset init`).
     pub fn reset_init(&mut self) -> io::Result<()> {
         self.send_command("reset init")?;
         Ok(())
     }
 
+    /// Resets the target, loads the ELF and halts it.
     pub fn load_program(&mut self, binary_path: &Path) -> io::Result<()> {
         tracing::info!(
             "Loading program: {}",
@@ -90,7 +99,7 @@ impl OpenOcd {
 
         self.reset_init()?;
         self.send_command(&format!(
-            "load {}",
+            "load_image {} 0x0 elf",
             binary_path.as_os_str().to_string_lossy()
         ))?;
 
@@ -100,21 +109,13 @@ impl OpenOcd {
         Ok(())
     }
 
-    /// Writes `data` to target memory at `addr` in a single `write_memory` call.
-    pub fn write_memory(&mut self, addr: u32, data: &[u8]) -> io::Result<()> {
-        let bytes: Vec<String> = data.iter().map(|b| b.to_string()).collect();
-        self.send_command(&format!(
-            "write_memory 0x{addr:x} 8 {{{}}}",
-            bytes.join(" ")
-        ))?;
-        Ok(())
-    }
-
+    /// Halts the target (1 s timeout).
     pub fn halt(&mut self) -> io::Result<()> {
         self.send_command("halt 1000")?;
         Ok(())
     }
 
+    /// Lets the target run.
     pub fn resume(&mut self) -> io::Result<()> {
         self.send_command("resume")?;
         Ok(())
@@ -126,6 +127,7 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
+    /// Starts a one-shot server that answers any command with `reply`; returns its address.
     fn fake_server(reply: &'static str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
