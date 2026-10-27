@@ -9,10 +9,9 @@ To build and run the current version, you need:
 * OpenOCD with RISC-V target support;
 * an OpenOCD-compatible debug adapter;
 * a supported RISC-V target;
-* a target ELF file;
+* a RISC-V toolchain, `make` and the `atndecode` decoder;
+* an assembly environment directory with a Makefile that builds `snippet.elf` from `src/snippet.S`;
 * a Teledyne oscilloscope reachable through NI-VISA (USB).
-
-The measurement is taken from the oscilloscope through VISA; `ScopeMeasurement::measure` in `src/measurement.rs` still has to be implemented.
 
 The full setup has not yet been tested on the final hardware.
 
@@ -57,31 +56,19 @@ cargo build --release
 
 If the build succeeds, the compiled files will be created in the `target` directory.
 
-## Prepare the Target Program
+## Prepare the Build Environment
 
-The current code expects the target ELF file at:
+Set these in the config file or on the command line:
 
-`<assembly-environment>/snippet.elf`
+* `assembly_environment`: directory containing the Makefile. For each input the fuzzer writes `src/snippet.S` there (the `src` directory must exist), runs `make -B` and loads `snippet.elf`;
+* `atndecode_path`: decoder that reads the bitstream on stdin and writes assembly to stdout;
+* `riscv_toolpath`: RISC-V toolchain directory, passed to `make` as the environment variable `RISCV`.
 
-If the `testcases` folder does not exist, create it first:
-
-```powershell
-New-Item testcases -ItemType Directory
-```
-
-Then place the required ELF file inside that folder and name it:
-
-`snippet.elf`
-
-The ELF file must match the RISC-V target used with OpenOCD.
-
-The code sends the path `<assembly-environment>/snippet.elf` to OpenOCD. Therefore, OpenOCD should also be started from the project folder. Otherwise, OpenOCD may not find the ELF file.
+The ELF is loaded by OpenOCD, so OpenOCD must be able to read `assembly_environment`.
 
 ## Start OpenOCD
 
 OpenOCD must already be running before the Rust program is started.
-
-Start OpenOCD from the main project folder so that it can resolve the relative ELF path.
 
 The exact command depends on the debug adapter and RISC-V target. In general, OpenOCD is started with an interface configuration and a target configuration:
 
@@ -99,44 +86,19 @@ The correct interface and target configurations for the final hardware still nee
 
 ## Run the Program
 
-After OpenOCD is running and the required files are prepared, open another terminal in the project folder and run:
+After OpenOCD is running, open another terminal in the project folder and run, for example:
 
 ```powershell
-cargo run
+cargo run --release -- --config fuzzer.toml
 ```
 
-For an optimized build, use:
+See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
-```powershell
-cargo run --release
-```
+## Fuzzing Behaviour
 
-A successful initial connection and setup should show messages similar to:
+The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. Inputs that cannot be decoded or built are skipped. OpenOCD errors and repeated measurement failures abort the run.
 
-```text
-Connected to OpenOCD at 127.0.0.1:6666
-Loading program: <assembly-environment>/snippet.elf
-Program loaded successfully.
-Idle power: 0.0
-Running power: 0.0
-```
-
-## Current Fuzzing Behaviour
-
-The corpus starts with `--seed` (default: 16 zero bytes), inputs are mutated with havoc mutators and decoded and built into the target program. Inputs with a new best measurement are saved to the solutions directory with the delta in the file name. OpenOCD errors and repeated measurement failures abort the run.
-
-When an input produces a new highest measurement, the program logs the following when an input produces a new highest measurement:
-
-```text
-New best measurement: <value>
-```
-
-During an executed iteration, the current input is written to:
-
-`current_input.bin`
-
-The program creates a `solutions/` directory automatically and configures it as the LibAFL solutions corpus. However, the current numeric feedback is configured as normal corpus feedback, so new best-measurement inputs are added to the in-memory corpus and are not currently saved in `solutions/`.
-
+Inputs with a new best `running - idle` delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name.
 
 ## Logging
 
@@ -144,9 +106,9 @@ Logs go to `fuzzer.log` (override with `--log-file`). Filter per module with `RU
 
 ## Oscilloscope (VISA)
 
-Builds need the NI-VISA library; `.cargo/config.toml` sets `LIB_VISA_PATH` (adjust for your system). Use `--list-scopes` to find the resource string, then `--scope-resource <STRING>` (required). Implement `ScopeMeasurement::measure` in `src/measurement.rs`.
+Builds need the NI-VISA library; `.cargo/config.toml` sets `LIB_VISA_PATH` (adjust for your system). Use `--list-scopes` to find the resource string, then `--scope-resource <STRING>` (required).
 
-The fuzzer scores each input by `running - idle`: idle is measured after `reset init` (target halted), running after `resume` plus `--settle-ms`.
+The idle level is measured after the target is reset and halted. The program is then resumed and, after `--settle-ms`, the running level is measured. The score is `running - idle`.
 
 ## Configuration file
 
@@ -154,4 +116,4 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 
 ## Source layout
 
-`cli.rs` (arguments/config), `logging.rs`, `feedback.rs` (numeric feedback), `harness.rs` (per-input idle/run measurement), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `main.rs` (wiring).
+`cli.rs` (arguments/config), `logging.rs`, `feedback.rs` (numeric feedback), `harness.rs` (per-input build, load and idle/run measurement), `snippet.rs` (decode and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `main.rs` (wiring).
