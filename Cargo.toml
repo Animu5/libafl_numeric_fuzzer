@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-libafl = { version = "0.15.4", features = ["tui_monitor", "afl_exec_sec", "track_hit_feedbacks", "introspection"] }
-libafl_bolts = { version = "0.15.4", features = ["cli"] }
+libafl = { version = "0.16.1", features = ["tui_monitor", "afl_exec_sec", "track_hit_feedbacks", "introspection"] }
+libafl_bolts = { version = "0.16.1", features = ["cli"] }
 clap = { version = "4.6.4", features = ["derive"]}
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+visa-rs = "0.7.1"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = { version = "1", default-features = false, features = ["parse", "serde"] }
