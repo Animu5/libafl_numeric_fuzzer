@@ -2,18 +2,12 @@ use crate::scope::{Scope, ScopeError};
 use std::time::Duration;
 use std::{error::Error, fmt};
 
-/// Scope commands: one-time setup, arm for the idle/run capture, and read the mean.
+/// Scope commands: one-time setup, capture the idle level into memory M1, capture the
+/// running level, and read the mean of F1 (the difference between the running and idle level).
 const DO_SETUP: &str = "DISP ON;CHDR OFF;TDIV 50MS";
 const DO_IDLE: &str = "ARM;FRTR;WAIT;STO C3,M1;WAIT;*OPC?";
 const DO_RUN: &str = "ARM;FRTR;WAIT;*OPC?";
 const GET_MEASUREMENT: &str = "F1:PAVA? MEAN";
-
-/// Target state in which a measurement is taken.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MeasurementPhase {
-    Idle,
-    Run,
-}
 
 /// Why a measurement failed.
 #[derive(Debug)]
@@ -55,14 +49,18 @@ impl From<ScopeError> for MeasurementError {
     }
 }
 
-/// Source of one scalar reading per target phase.
+/// Measures the power delta between the running and the idle target.
 pub trait Measurement {
-    fn measure(&mut self, phase: MeasurementPhase) -> Result<f64, MeasurementError>;
+    /// Records the idle level while the target is halted.
+    fn capture_idle(&mut self) -> Result<(), MeasurementError>;
+
+    /// Captures the running level and returns its difference to the recorded idle level.
+    fn measure_delta(&mut self) -> Result<f64, MeasurementError>;
 }
 
-/// Oscilloscope measurement. Port the phase-specific arming/readout logic into `measure`.
+/// Oscilloscope measurement. The scope itself computes the delta: the idle capture is stored
+/// in M1 and F1 (running minus M1) is read once after the running capture.
 pub struct ScopeMeasurement {
-    #[allow(dead_code)]
     scope: Scope,
     /// How long an arm/acquire command may take to answer.
     acquire_timeout: Duration,
@@ -100,15 +98,19 @@ impl ScopeMeasurement {
 }
 
 impl Measurement for ScopeMeasurement {
-    /// Arms the scope for `phase`, then reads the measured mean.
-    fn measure(&mut self, phase: MeasurementPhase) -> Result<f64, MeasurementError> {
-        let command = match phase {
-            MeasurementPhase::Idle => DO_IDLE,
-            MeasurementPhase::Run => DO_RUN,
-        };
+    /// Arms the scope and stores the acquisition in M1. Nothing is read back: F1 is only
+    /// meaningful once the running level has been captured.
+    fn capture_idle(&mut self) -> Result<(), MeasurementError> {
         // Arming waits for a complete acquisition, which is much slower than a normal query.
         self.scope
-            .query_with_timeout(command, self.acquire_timeout)?;
+            .query_with_timeout(DO_IDLE, self.acquire_timeout)?;
+        Ok(())
+    }
+
+    /// Arms the scope for the running capture, then reads the mean of F1.
+    fn measure_delta(&mut self) -> Result<f64, MeasurementError> {
+        self.scope
+            .query_with_timeout(DO_RUN, self.acquire_timeout)?;
 
         let response = self.scope.query(GET_MEASUREMENT)?;
         self.parse_measurement(response)
