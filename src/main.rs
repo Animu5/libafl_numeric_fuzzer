@@ -126,6 +126,7 @@ fn main() -> Result<(), Error> {
         shared: shared.clone(),
         settle: Duration::from_millis(config.settle_ms),
         failures: 0,
+        target_failures: 0,
     };
 
     let corpus = OnDiskCorpus::<BytesInput>::new(&config.solutions_path)?;

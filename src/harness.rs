@@ -12,6 +12,9 @@ use std::{rc::Rc, thread, time::Duration};
 /// Number of consecutive failed measurements tolerated before aborting.
 const MAX_MEASUREMENT_FAILURES: u32 = 5;
 
+/// Number of consecutive target failures (e.g. crashing snippets) tolerated before aborting.
+const MAX_TARGET_FAILURES: u32 = 10;
+
 /// Runs one fuzz input on the target and records `running - idle` in `shared`.
 pub struct Harness {
     pub openocd: OpenOcd,
@@ -25,6 +28,8 @@ pub struct Harness {
     pub settle: Duration,
     /// Consecutive failed measurements.
     pub failures: u32,
+    /// Consecutive runs in which the target misbehaved.
+    pub target_failures: u32,
 }
 
 impl Harness {
@@ -32,6 +37,26 @@ impl Harness {
     fn fatal(&self, msg: String) -> ExitKind {
         *self.shared.fatal.borrow_mut() = Some(msg);
         ExitKind::Ok
+    }
+
+    /// Handles an OpenOCD error caused by the current input, e.g. a snippet that crashed or
+    /// wedged the target. Tries to reset the target; if that works the input is skipped,
+    /// otherwise (OpenOCD gone, target unrecoverable, too many failures in a row) the run aborts.
+    fn target_failed(&mut self, what: &str, err: std::io::Error) -> ExitKind {
+        self.target_failures += 1;
+        tracing::warn!("Skipping input, {what} failed: {err}");
+        if self.target_failures >= MAX_TARGET_FAILURES {
+            return self.fatal(format!(
+                "{} consecutive target failures, last: {what}: {err}",
+                self.target_failures
+            ));
+        }
+        match self.openocd.reset_halt() {
+            Ok(()) => ExitKind::Ok,
+            Err(e) => self.fatal(format!(
+                "Target did not recover after {what} failed ({err}): {e}"
+            )),
+        }
     }
 
     /// Builds, loads and measures one input; the result goes to `shared`.
@@ -48,17 +73,15 @@ impl Harness {
             }
         };
 
-        // Any OpenOCD error is fatal: the feedback sees it and aborts the fuzz loop.
-        let setup = self.openocd.load_program(&elf);
-        if let Err(e) = setup {
-            return self.fatal(format!("OpenOCD setup failed: {e}"));
+        if let Err(e) = self.openocd.load_program(&elf) {
+            return self.target_failed("loading the program", e);
         }
 
         // Idle measurement: target is halted after reset.
         let idle = self.measurement.measure(MeasurementPhase::Idle);
 
         if let Err(e) = self.openocd.resume() {
-            return self.fatal(format!("OpenOCD resume failed: {e}"));
+            return self.target_failed("resume", e);
         }
 
         // Give the target some time to execute before measuring.
@@ -67,6 +90,7 @@ impl Harness {
         match (idle, self.measurement.measure(MeasurementPhase::Run)) {
             (Ok(idle), Ok(running)) => {
                 self.failures = 0;
+                self.target_failures = 0;
                 tracing::debug!("idle={idle} running={running} delta={}", running - idle);
                 self.shared.delta.set(Some(running - idle));
             }
