@@ -1,4 +1,9 @@
 /target
 /solutions
+/snippets
 Cargo.lock
 
+fuzzer.log
+
+# No need to add local configuration.
+fuzzer_rai07.toml
