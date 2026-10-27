@@ -96,7 +96,7 @@ See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
 ## Fuzzing Behaviour
 
-The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. Inputs that cannot be decoded or built are skipped. OpenOCD errors and repeated measurement failures abort the run.
+The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
 Inputs with a new best `running - idle` delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name.
 

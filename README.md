@@ -19,7 +19,7 @@ For every fuzz input the fuzzer:
 5. resumes the target (the programs are infinite loops), waits `--settle-ms` and measures the running level;
 6. scores the input by `running - idle` and treats it as interesting if it is a new best.
 
-Inputs that cannot be decoded or built are logged and skipped. OpenOCD errors and repeated measurement failures abort the run.
+Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
 The corpus starts with a seed (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Inputs with a new best delta are saved to the solutions directory with the delta in the file name.
 

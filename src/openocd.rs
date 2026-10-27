@@ -86,11 +86,17 @@ impl OpenOcd {
 
     /// Resets the target and halts it (`reset init`).
     pub fn reset_init(&mut self) -> io::Result<()> {
-        self.send_command("reset init")?;
+        self.send_command("reset halt")?;
         Ok(())
     }
 
-    /// Resets the target, loads the ELF and halts it.
+    /// Resets and halts the target without running the `reset-init` event; used for recovery.
+    pub fn reset_halt(&mut self) -> io::Result<()> {
+        self.send_command("reset halt")?;
+        Ok(())
+    }
+
+    /// Resets the target, loads the ELF, and halts it.
     pub fn load_program(&mut self, binary_path: &Path) -> io::Result<()> {
         tracing::info!(
             "Loading program: {}",
