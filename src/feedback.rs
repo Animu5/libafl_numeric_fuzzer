@@ -14,7 +14,9 @@ use std::{
 /// State shared between the harness and the feedback.
 #[derive(Debug, Default)]
 pub struct Shared {
+    /// `running - idle` of the last run; `None` if it was not measured.
     pub delta: Cell<Option<f64>>,
+    /// Unrecoverable harness error; makes the next `is_interesting` abort the fuzz loop.
     pub fatal: RefCell<Option<String>>,
 }
 
@@ -22,15 +24,20 @@ pub struct Shared {
 /// A fatal harness error stored there aborts the fuzz loop.
 #[derive(Clone, Debug)]
 pub struct NumericFeedback {
+    /// Highest delta seen so far.
     best: f64,
+    /// Result of the last `is_interesting` call.
     last: bool,
+    /// Number of testcases saved, used in the filename.
     count: u64,
+    /// Delta of the last run, recorded in the testcase filename.
     last_value: Option<f64>,
     shared: Rc<Shared>,
     name: Cow<'static, str>,
 }
 
 impl NumericFeedback {
+    /// Creates a feedback that starts with no best value.
     pub fn new(shared: Rc<Shared>) -> Self {
         Self {
             best: f64::MIN,
@@ -52,6 +59,7 @@ impl Named for NumericFeedback {
 impl<S> StateInitializer<S> for NumericFeedback {}
 
 impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
+    /// Interesting if the delta is a new maximum; NaN and missing deltas are not.
     fn is_interesting(
         &mut self,
         _state: &mut S,
@@ -80,6 +88,7 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
         Ok(self.last)
     }
 
+    /// Names the saved testcase `NNNN_delta_<value>`.
     fn append_metadata(
         &mut self,
         _state: &mut S,
@@ -99,6 +108,7 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
 mod tests {
     use super::*;
 
+    /// Simulates one run in which the harness stored `delta`.
     fn run(f: &mut NumericFeedback, delta: Option<f64>) -> Result<bool, Error> {
         f.shared.delta.set(delta);
         <NumericFeedback as Feedback<(), (), (), ()>>::is_interesting(
