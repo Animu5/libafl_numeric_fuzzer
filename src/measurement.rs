@@ -1,4 +1,5 @@
 use crate::scope::{Scope, ScopeError};
+use std::time::Duration;
 use std::{error::Error, fmt};
 
 /// Scope commands: one-time setup, arm for the idle/run capture, and read the mean.
@@ -63,13 +64,18 @@ pub trait Measurement {
 pub struct ScopeMeasurement {
     #[allow(dead_code)]
     scope: Scope,
+    /// How long an arm/acquire command may take to answer.
+    acquire_timeout: Duration,
 }
 
 impl ScopeMeasurement {
     /// Takes the scope and sends the one-time setup commands.
-    pub fn new(mut scope: Scope) -> Result<Self, MeasurementError> {
+    pub fn new(mut scope: Scope, acquire_timeout: Duration) -> Result<Self, MeasurementError> {
         scope.write(DO_SETUP)?;
-        Ok(Self { scope })
+        Ok(Self {
+            scope,
+            acquire_timeout,
+        })
     }
 
     /// Parses `type,value,OK` into the value.
@@ -100,7 +106,9 @@ impl Measurement for ScopeMeasurement {
             MeasurementPhase::Idle => DO_IDLE,
             MeasurementPhase::Run => DO_RUN,
         };
-        self.scope.query(command)?;
+        // Arming waits for a complete acquisition, which is much slower than a normal query.
+        self.scope
+            .query_with_timeout(command, self.acquire_timeout)?;
 
         let response = self.scope.query(GET_MEASUREMENT)?;
         self.parse_measurement(response)

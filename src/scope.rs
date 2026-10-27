@@ -12,18 +12,20 @@ use visa_rs::{ResID, TIMEOUT_IMMEDIATE};
 pub enum ScopeError {
     /// The VISA library or its default resource manager is unavailable.
     ResourceManager(String),
-    /// Listing or parsing a resource string failed (e.g. it contains a NUL byte).
+    /// Listing or parsing a resource string failed (e.g., it contains a NUL byte).
     InvalidResource(String),
     /// Opening the instrument failed.
     Open { resource: String, message: String },
-    /// The requested I/O timeout is not accepted by VISA.
+    /// VISA does not accept the requested I/O timeout.
     InvalidTimeout(Duration),
     /// Setting a VISA attribute failed.
     Attribute(String),
     /// Writing a command failed.
     Write(io::Error),
-    /// Reading a response failed or timed out.
+    /// Reading a response failed.
     Read(io::Error),
+    /// No response arrived within the I/O timeout (e.g. the acquisition takes longer).
+    Timeout { command: String, timeout: Duration },
 }
 
 impl fmt::Display for ScopeError {
@@ -36,6 +38,9 @@ impl fmt::Display for ScopeError {
             Self::Attribute(m) => write!(f, "setting VISA attribute: {m}"),
             Self::Write(e) => write!(f, "scope write failed: {e}"),
             Self::Read(e) => write!(f, "scope read failed: {e}"),
+            Self::Timeout { command, timeout } => {
+                write!(f, "no response to {command:?} within {timeout:?}")
+            }
         }
     }
 }
@@ -54,6 +59,8 @@ pub struct Scope {
     // Declared first so the session is dropped before the resource manager.
     instr: Instrument,
     _rm: DefaultRM,
+    /// Currently configured VISA I/O timeout.
+    timeout: Duration,
 }
 
 impl Scope {
@@ -94,16 +101,26 @@ impl Scope {
                 message: e.to_string(),
             })?;
 
-        let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
-        let tmo = AttrTmoValue::new_checked(ms).ok_or(ScopeError::InvalidTimeout(timeout))?;
-        instr
-            .set_attr(tmo)
-            .map_err(|e| ScopeError::Attribute(e.to_string()))?;
-
-        let mut scope = Self { instr, _rm: rm };
+        let mut scope = Self {
+            instr,
+            _rm: rm,
+            timeout: Duration::ZERO,
+        };
+        scope.set_timeout(timeout)?;
         let idn = scope.query("*IDN?")?;
         tracing::info!("Connected to scope: {}", idn);
         Ok(scope)
+    }
+
+    /// Sets the VISA I/O timeout used by all following reads and writes.
+    pub fn set_timeout(&mut self, timeout: Duration) -> Result<(), ScopeError> {
+        let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+        let tmo = AttrTmoValue::new_checked(ms).ok_or(ScopeError::InvalidTimeout(timeout))?;
+        self.instr
+            .set_attr(tmo)
+            .map_err(|e| ScopeError::Attribute(e.to_string()))?;
+        self.timeout = timeout;
+        Ok(())
     }
 
     /// Sends an SCPI command, appending the newline command terminator.
@@ -116,14 +133,57 @@ impl Scope {
 
     /// Sends an SCPI query and returns its response with the surrounding whitespace removed.
     ///
-    /// VISA's configured timeout bounds the read. The response is read in one VISA
-    /// read operation; commands should return a response that fits in the buffer.
+    /// The read blocks until the scope answers, bounded by the I/O timeout; a slow command
+    /// such as an acquisition needs [`Scope::query_with_timeout`]. The response is read in one
+    /// VISA read operation; commands should return a response that fits in the buffer.
     pub fn query(&mut self, cmd: &str) -> Result<String, ScopeError> {
         self.write(cmd)?;
         let mut buf = vec![0u8; 64 * 1024];
-        let n = (&self.instr).read(&mut buf).map_err(ScopeError::Read)?;
+        let n = match (&self.instr).read(&mut buf) {
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                // Drop buffered data so a late response is not mistaken for the next answer.
+                if let Err(e) = self.instr.clear() {
+                    tracing::warn!("Could not clear scope buffers after timeout: {e}");
+                }
+                return Err(ScopeError::Timeout {
+                    command: cmd.to_string(),
+                    timeout: self.timeout,
+                });
+            }
+            Err(e) => return Err(ScopeError::Read(e)),
+        };
         let line = String::from_utf8_lossy(&buf[..n]).trim().to_string();
         tracing::debug!("scope -> {}", line);
         Ok(line)
+    }
+
+    /// Like [`Scope::query`], but waits up to `timeout` for the response.
+    /// The previous I/O timeout is restored afterwards.
+    pub fn query_with_timeout(
+        &mut self,
+        cmd: &str,
+        timeout: Duration,
+    ) -> Result<String, ScopeError> {
+        let previous = self.timeout;
+        self.set_timeout(timeout)?;
+        let result = self.query(cmd);
+        self.set_timeout(previous)?;
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_message_names_command_and_duration() {
+        let e = ScopeError::Timeout {
+            command: "ARM;WAIT;*OPC?".into(),
+            timeout: Duration::from_secs(5),
+        };
+        let m = e.to_string();
+        assert!(m.contains("ARM;WAIT;*OPC?") && m.contains("5s"));
     }
 }

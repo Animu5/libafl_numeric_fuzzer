@@ -104,8 +104,13 @@ fn main() -> Result<(), Error> {
         Duration::from_millis(config.scope_timeout_ms),
     )
     .map_err(context("Could not connect to scope"))?;
-    let measurement: Box<dyn Measurement> =
-        Box::new(ScopeMeasurement::new(scope).map_err(context("Could not configure scope"))?);
+    let measurement: Box<dyn Measurement> = Box::new(
+        ScopeMeasurement::new(
+            scope,
+            Duration::from_millis(config.scope_acquire_timeout_ms),
+        )
+        .map_err(context("Could not configure scope"))?,
+    );
 
     let seeds = load_seeds(config.seed.as_deref())?;
 
