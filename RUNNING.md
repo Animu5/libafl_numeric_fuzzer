@@ -10,9 +10,9 @@ To build and run the current version, you need:
 * an OpenOCD-compatible debug adapter;
 * a supported RISC-V target;
 * a target ELF file;
-* a `power.txt` file containing the latest measurement value.
+* a Teledyne oscilloscope reachable through NI-VISA (USB).
 
-The current version does not yet read directly from the power measurement device. The value must be written to `power.txt` by another process.
+The measurement is taken from the oscilloscope through VISA; `ScopeMeasurement::measure` in `src/measurement.rs` still has to be implemented.
 
 The full setup has not yet been tested on the final hardware.
 
@@ -61,7 +61,7 @@ If the build succeeds, the compiled files will be created in the `target` direct
 
 The current code expects the target ELF file at:
 
-`testcases/program.elf`
+`<assembly-environment>/snippet.elf`
 
 If the `testcases` folder does not exist, create it first:
 
@@ -71,33 +71,11 @@ New-Item testcases -ItemType Directory
 
 Then place the required ELF file inside that folder and name it:
 
-`program.elf`
+`snippet.elf`
 
 The ELF file must match the RISC-V target used with OpenOCD.
 
-The code sends the relative path `testcases/program.elf` to OpenOCD. Therefore, OpenOCD should also be started from the project folder. Otherwise, OpenOCD may not find the ELF file.
-
-## Prepare the Power Measurement File
-
-The current implementation reads the latest measurement from:
-
-`power.txt`
-
-Create the file in the main project folder:
-
-```powershell
-Set-Content power.txt "0.0"
-```
-
-The file should contain only one valid numeric value, for example:
-
-```text
-2.417
-```
-
-At the moment, the Rust program does not communicate directly with the power measurement device. Another process must update `power.txt` with the latest value.
-
-If the file is missing, unreadable or contains an invalid value, the current implementation uses `0.0` without reporting an error.
+The code sends the path `<assembly-environment>/snippet.elf` to OpenOCD. Therefore, OpenOCD should also be started from the project folder. Otherwise, OpenOCD may not find the ELF file.
 
 ## Start OpenOCD
 
@@ -137,21 +115,17 @@ A successful initial connection and setup should show messages similar to:
 
 ```text
 Connected to OpenOCD at 127.0.0.1:6666
-Loading program: testcases/program.elf
+Loading program: <assembly-environment>/snippet.elf
 Program loaded successfully.
 Idle power: 0.0
 Running power: 0.0
 ```
 
-The exact measurement values depend on the contents of `power.txt`.
-
 ## Current Fuzzing Behaviour
 
-The current corpus starts empty. Therefore, the fuzzing loop cannot perform useful iterations until a seed input is added.
+The corpus starts with `--seed` (default: 16 zero bytes), inputs are mutated with havoc mutators and written to target RAM (`--input-addr`). Inputs with a new best measurement are saved to the solutions directory with the delta in the file name. OpenOCD errors and repeated measurement failures abort the run.
 
-The current implementation also uses `NopMutator`, so it does not modify inputs.
-
-Once a seed input and a working mutator are added, the program is intended to print the following when an input produces a new highest measurement:
+When an input produces a new highest measurement, the program logs the following when an input produces a new highest measurement:
 
 ```text
 New best measurement: <value>
@@ -163,3 +137,21 @@ During an executed iteration, the current input is written to:
 
 The program creates a `solutions/` directory automatically and configures it as the LibAFL solutions corpus. However, the current numeric feedback is configured as normal corpus feedback, so new best-measurement inputs are added to the in-memory corpus and are not currently saved in `solutions/`.
 
+
+## Logging
+
+Logs go to `fuzzer.log` (override with `--log-file`). Filter per module with `RUST_LOG`, e.g. `RUST_LOG=warn,libafl_fuzzer::openocd=debug`.
+
+## Oscilloscope (VISA)
+
+Builds need the NI-VISA library; `.cargo/config.toml` sets `LIB_VISA_PATH` (adjust for your system). Use `--list-scopes` to find the resource string, then `--scope-resource <STRING>` (required). Implement `ScopeMeasurement::measure` in `src/measurement.rs`.
+
+The fuzzer scores each input by `running - idle`: idle is measured after `reset init` (target halted), running after `resume` plus `--settle-ms`.
+
+## Configuration file
+
+All options can be set in a TOML file passed with `--config` (see `fuzzer.example.toml`). Command-line flags override file values.
+
+## Source layout
+
+`cli.rs` (arguments/config), `logging.rs`, `feedback.rs` (numeric feedback), `harness.rs` (per-input idle/run measurement), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `main.rs` (wiring).
