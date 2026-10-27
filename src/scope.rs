@@ -5,7 +5,7 @@ use visa_rs::enums::attribute::{AttrTmoValue, HasAttribute};
 use visa_rs::prelude::{AccessMode, AsResourceManager, DefaultRM, Instrument};
 use visa_rs::{ResID, TIMEOUT_IMMEDIATE};
 
-/// Minimal VISA connection to the oscilloscope (write/query only).
+/// Minimal VISA connection to the oscilloscope for sending and querying SCPI commands.
 pub struct Scope {
     // Declared first so the session is dropped before the resource manager.
     instr: Instrument,
@@ -13,7 +13,9 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// Lists VISA resources matching `expr` (e.g. "USB?*INSTR").
+    /// Lists VISA resources matching a VISA resource expression, such as `"USB?*INSTR"`.
+    ///
+    /// Use the returned resource name with [`Scope::connect`].
     pub fn list_resources(expr: &str) -> Result<Vec<String>, String> {
         let rm = DefaultRM::new().map_err(|e| e.to_string())?;
         let expr: ResID = CString::new(expr).map_err(|e| e.to_string())?.into();
@@ -25,6 +27,10 @@ impl Scope {
         Ok(out)
     }
 
+    /// Opens a VISA resource and verifies the connection by querying `*IDN?`
+    ///
+    /// `timeout` configures the instrument's I/O timeout. Opening the resource does not
+    /// wait for a VISA lock.
     pub fn connect(resource: &str, timeout: Duration) -> Result<Self, String> {
         let rm = DefaultRM::new().map_err(|e| format!("VISA resource manager: {e}"))?;
         let res: ResID = CString::new(resource).map_err(|e| e.to_string())?.into();
@@ -42,6 +48,7 @@ impl Scope {
         Ok(scope)
     }
 
+    /// Sends an SCPI command, appending the newline command terminator.
     pub fn write(&mut self, cmd: &str) -> Result<(), String> {
         tracing::debug!("scope <- {}", cmd);
         (&self.instr)
@@ -49,6 +56,10 @@ impl Scope {
             .map_err(|e| format!("Scope write failed: {e}"))
     }
 
+    /// Sends an SCPI query and returns its response with the surrounding whitespace removed.
+    ///
+    /// VISA's configured timeout bounds the read. The response is read in one VISA
+    /// read operation; commands should return a response that fits in the buffer.
     pub fn query(&mut self, cmd: &str) -> Result<String, String> {
         self.write(cmd)?;
         let mut buf = vec![0u8; 64 * 1024];
