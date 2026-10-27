@@ -1,4 +1,4 @@
-use crate::scope::Scope;
+use crate::scope::{Scope, ScopeError};
 use std::{error::Error, fmt};
 
 /// Scope commands: one-time setup, arm for the idle/run capture, and read the mean.
@@ -18,7 +18,7 @@ pub enum MeasurementPhase {
 #[derive(Debug)]
 pub enum MeasurementError {
     /// VISA communication error.
-    Scope(String),
+    Scope(ScopeError),
     /// Response not in the form `type,value,OK`.
     InvalidReading(String),
     /// Value parsed but is NaN or infinite.
@@ -39,7 +39,20 @@ impl fmt::Display for MeasurementError {
     }
 }
 
-impl Error for MeasurementError {}
+impl Error for MeasurementError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Scope(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<ScopeError> for MeasurementError {
+    fn from(e: ScopeError) -> Self {
+        Self::Scope(e)
+    }
+}
 
 /// Source of one scalar reading per target phase.
 pub trait Measurement {
@@ -55,7 +68,7 @@ pub struct ScopeMeasurement {
 impl ScopeMeasurement {
     /// Takes the scope and sends the one-time setup commands.
     pub fn new(mut scope: Scope) -> Result<Self, MeasurementError> {
-        scope.write(DO_SETUP).map_err(MeasurementError::Scope)?;
+        scope.write(DO_SETUP)?;
         Ok(Self { scope })
     }
 
@@ -87,12 +100,9 @@ impl Measurement for ScopeMeasurement {
             MeasurementPhase::Idle => DO_IDLE,
             MeasurementPhase::Run => DO_RUN,
         };
-        self.scope.query(command).map_err(MeasurementError::Scope)?;
+        self.scope.query(command)?;
 
-        let response = self
-            .scope
-            .query(GET_MEASUREMENT)
-            .map_err(MeasurementError::Scope)?;
+        let response = self.scope.query(GET_MEASUREMENT)?;
         self.parse_measurement(response)
     }
 }
@@ -100,12 +110,16 @@ impl Measurement for ScopeMeasurement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     #[test]
     fn measurement_error_messages_are_descriptive() {
-        assert!(MeasurementError::Scope("timeout".into())
-            .to_string()
-            .contains("timeout"));
+        assert!(MeasurementError::Scope(ScopeError::Read(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "timeout"
+        )))
+        .to_string()
+        .contains("timeout"));
         assert!(MeasurementError::InvalidReading("N/A".into())
             .to_string()
             .contains("N/A"));
