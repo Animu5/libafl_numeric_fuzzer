@@ -108,6 +108,7 @@ impl OpenOcd {
             "load_image {} 0x0 elf",
             binary_path.as_os_str().to_string_lossy()
         ))?;
+        self.send_command("set_reg {pc 0x80000000}")?;
 
         self.halt()?;
 
