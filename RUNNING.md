@@ -104,6 +104,10 @@ Inputs with a new best `running - idle` delta are logged as `New best measuremen
 
 Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on every start. Filter per module with `RUST_LOG`, e.g. `RUST_LOG=warn,libafl_fuzzer::openocd=debug`.
 
+## Saving snippets
+
+`--snippet-dir <DIR>` (TOML `snippet_dir`) additionally saves every decoded snippet as `NNNNNN.S`, numbered in execution order, so you can inspect what was built and loaded. The number appears in the debug log (`Saved snippet to …`), which lets you match a crash to its snippet. Snippets are not deleted, so this can use a lot of disk space on long runs.
+
 ## Run timeout
 
 LibAFL kills the process if one run takes longer than its executor timeout (default 5 s), which a build, a program load and two scope acquisitions exceed. `--exec-timeout-ms` (default 120000) sets it; it must be larger than the sum of build time, load time, both acquisitions and `--settle-ms`. A timeout shows up in the log as `Timeout in fuzz run.`

@@ -12,4 +12,5 @@ scope_timeout_ms = 20000
 # openocd_addr = "127.0.0.1:6666"
 # scope_acquire_timeout_ms = 30000
 # exec_timeout_ms = 120000
+# snippet_dir = "./snippets"  # keep every decoded snippet as NNNNNN.S (debugging)
 # settle_ms = 100

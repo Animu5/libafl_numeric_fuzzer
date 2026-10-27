@@ -115,13 +115,20 @@ fn main() -> Result<(), Error> {
     let seeds = load_seeds(config.seed.as_deref())?;
 
     let shared = Rc::new(Shared::default());
+    let mut builder = SnippetBuilder::new(
+        config.assembly_environment,
+        config.atndecode_path,
+        config.riscv_toolpath,
+    );
+    if let Some(dir) = config.snippet_dir {
+        builder = builder
+            .with_archive(dir)
+            .map_err(context("Could not create snippet directory"))?;
+    }
+
     let mut harness = Harness {
         openocd,
-        builder: SnippetBuilder::new(
-            config.assembly_environment,
-            config.atndecode_path,
-            config.riscv_toolpath,
-        ),
+        builder,
         measurement,
         shared: shared.clone(),
         settle: Duration::from_millis(config.settle_ms),
