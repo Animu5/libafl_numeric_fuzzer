@@ -108,6 +108,8 @@ Logs go to `fuzzer.log` (override with `--log-file`). Filter per module with `RU
 
 Builds need the NI-VISA library; `.cargo/config.toml` sets `LIB_VISA_PATH` (adjust for your system). Use `--list-scopes` to find the resource string, then `--scope-resource <STRING>` (required).
 
+Arm/acquire commands block until the scope has captured a full acquisition, so they use `--scope-acquire-timeout-ms` (default 30000). It must exceed the acquisition time. All other queries use `--scope-timeout-ms` (default 5000). A missed deadline is reported as a timeout and the scope buffers are cleared.
+
 The idle level is measured after the target is reset and halted. The program is then resumed and, after `--settle-ms`, the running level is measured. The score is `running - idle`.
 
 ## Configuration file

@@ -32,7 +32,7 @@ pub struct Args {
     #[arg(long)]
     riscv_toolpath: Option<PathBuf>,
 
-    /// Directory where inputs with a new best measurement are stored
+    /// Directory where inputs with the new best measurement are stored
     #[arg(short, long)]
     solutions_path: Option<PathBuf>,
 
@@ -48,13 +48,17 @@ pub struct Args {
     #[arg(long)]
     openocd_addr: Option<String>,
 
-    /// VISA resource string of the oscilloscope (e.g. USB0::0x05FF::...::INSTR); see --list-scopes
+    /// VISA resource string of the oscilloscope (e.g., USB0::0x05FF::...::INSTR); see --list-scopes
     #[arg(long)]
     scope_resource: Option<String>,
 
     /// Scope I/O timeout in milliseconds (default: 5000)
     #[arg(long)]
     scope_timeout_ms: Option<u64>,
+
+    /// Time in milliseconds to wait for the scope to finish an acquisition (default: 30000)
+    #[arg(long)]
+    scope_acquire_timeout_ms: Option<u64>,
 
     /// Time in milliseconds to let the target run before the running measurement (default: 100)
     #[arg(long)]
@@ -73,6 +77,7 @@ pub struct Config {
     pub openocd_addr: String,
     pub scope_resource: String,
     pub scope_timeout_ms: u64,
+    pub scope_acquire_timeout_ms: u64,
     pub settle_ms: u64,
 }
 
@@ -136,6 +141,10 @@ impl Args {
                 .scope_timeout_ms
                 .or(file.scope_timeout_ms)
                 .unwrap_or(5000),
+            scope_acquire_timeout_ms: self
+                .scope_acquire_timeout_ms
+                .or(file.scope_acquire_timeout_ms)
+                .unwrap_or(30000),
             settle_ms: self.settle_ms.or(file.settle_ms).unwrap_or(100),
         }
     }
