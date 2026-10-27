@@ -4,6 +4,7 @@ use std::{
     path::PathBuf,
     process::{Command, Stdio},
     thread,
+    time::Instant,
 };
 
 #[derive(Debug)]
@@ -56,8 +57,17 @@ impl SnippetBuilder {
     pub fn build(&mut self, bitstream: &[u8]) -> Result<PathBuf, BuildError> {
         let elf = self.assembly_environment.join("snippet.elf");
 
+        tracing::debug!("Building snippet from {} input bytes", bitstream.len());
+        let start = Instant::now();
         self.decode(bitstream)?;
+        let decoded = start.elapsed();
         self.make()?;
+        tracing::debug!(
+            "Built {} (decode {:?}, make {:?})",
+            elf.display(),
+            decoded,
+            start.elapsed() - decoded
+        );
 
         if !elf.is_file() {
             return Err(BuildError::Make(format!(
@@ -90,7 +100,13 @@ impl SnippetBuilder {
             _ => {}
         }
 
+        tracing::debug!(
+            "atndecode: {}, {} bytes of assembly",
+            out.status,
+            out.stdout.len()
+        );
         if !out.status.success() {
+            tracing::debug!("atndecode stderr: {}", String::from_utf8_lossy(&out.stderr));
             return Err(BuildError::Decode(format!(
                 "{}: {}",
                 out.status,
@@ -116,7 +132,13 @@ impl SnippetBuilder {
             .env("RISCV", &self.riscv_toolpath)
             .current_dir(&self.assembly_environment)
             .output()?;
+        tracing::debug!("make: {}", out.status);
         if !out.status.success() {
+            tracing::debug!(
+                "make stdout: {}\nmake stderr: {}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
             return Err(BuildError::Make(format!(
                 "{}: {}",
                 out.status,
