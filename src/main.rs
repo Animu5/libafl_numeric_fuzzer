@@ -152,6 +152,7 @@ fn main() -> Result<(), Error> {
     let mut target = |input: &BytesInput| harness.run(input);
     let mut executor = InProcessExecutor::builder()
         .harness(&mut target)
+        .timeout(Duration::from_millis(config.exec_timeout_ms))
         .fuzzer(&mut fuzzer)
         .state(&mut state)
         .event_mgr(&mut manager)

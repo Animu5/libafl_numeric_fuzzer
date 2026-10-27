@@ -60,6 +60,10 @@ pub struct Args {
     #[arg(long)]
     scope_acquire_timeout_ms: Option<u64>,
 
+    /// LibAFL timeout for one complete run (build, load, both measurements) in milliseconds (default: 120000)
+    #[arg(long)]
+    exec_timeout_ms: Option<u64>,
+
     /// Time in milliseconds to let the target run before the running measurement (default: 100)
     #[arg(long)]
     settle_ms: Option<u64>,
@@ -78,6 +82,7 @@ pub struct Config {
     pub scope_resource: String,
     pub scope_timeout_ms: u64,
     pub scope_acquire_timeout_ms: u64,
+    pub exec_timeout_ms: u64,
     pub settle_ms: u64,
 }
 
@@ -145,6 +150,10 @@ impl Args {
                 .scope_acquire_timeout_ms
                 .or(file.scope_acquire_timeout_ms)
                 .unwrap_or(30000),
+            exec_timeout_ms: self
+                .exec_timeout_ms
+                .or(file.exec_timeout_ms)
+                .unwrap_or(120_000),
             settle_ms: self.settle_ms.or(file.settle_ms).unwrap_or(100),
         }
     }
