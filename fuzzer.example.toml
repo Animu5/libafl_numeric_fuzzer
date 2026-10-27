@@ -1,6 +1,7 @@
 # Use with: libafl_fuzzer --config fuzzer.toml (command-line flags override these values)
 assembly_environment = "/path/to/snippet_build"  # program loaded: <assembly_environment>/snippet.elf
 atndecode_path = "/path/to/atnwalk/build/riscv64g/bin/decode"
+riscv_toolpath = "/path/to/riscv"  # exported to make as RISCV
 solutions_path = "./solutions"
 scope_resource = "USB0::0x05ff::0x1023::SERIAL::INSTR"  # see --list-scopes
 seed = "/path/to/seeds"  # file or directory of seed files

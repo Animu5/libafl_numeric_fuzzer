@@ -112,7 +112,11 @@ fn main() -> Result<(), Error> {
     let shared = Rc::new(Shared::default());
     let mut harness = Harness {
         openocd,
-        builder: SnippetBuilder::new(config.assembly_environment, config.atndecode_path),
+        builder: SnippetBuilder::new(
+            config.assembly_environment,
+            config.atndecode_path,
+            config.riscv_toolpath,
+        ),
         measurement,
         shared: shared.clone(),
         settle: Duration::from_millis(config.settle_ms),

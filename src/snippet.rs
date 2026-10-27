@@ -35,25 +35,26 @@ impl From<io::Error> for BuildError {
 pub struct SnippetBuilder {
     assembly_environment: PathBuf,
     atndecode_path: PathBuf,
+    /// Toolchain directory exported to `make` as `RISCV`.
+    riscv_toolpath: PathBuf,
 }
 
 impl SnippetBuilder {
-    pub fn new(assembly_environment: PathBuf, atndecode_path: PathBuf) -> Self {
+    pub fn new(
+        assembly_environment: PathBuf,
+        atndecode_path: PathBuf,
+        riscv_toolpath: PathBuf,
+    ) -> Self {
         Self {
             assembly_environment,
             atndecode_path,
+            riscv_toolpath,
         }
     }
 
     /// Decodes `bitstream`, builds the snippet, and returns the path to the fresh ELF.
     pub fn build(&mut self, bitstream: &[u8]) -> Result<PathBuf, BuildError> {
         let elf = self.assembly_environment.join("snippet.elf");
-
-        // Never load a stale ELF if this build fails.
-        match std::fs::remove_file(&elf) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
-            _ => {}
-        }
 
         self.decode(bitstream)?;
         self.make()?;
@@ -97,13 +98,21 @@ impl SnippetBuilder {
         }
 
         let source = self.assembly_environment.join("src").join("snippet.S");
-        std::fs::write(source, &out.stdout)?;
+        std::fs::write(
+            source,
+            format!(
+                "#include \"init.inc\"\n\n{}\n",
+                String::from_utf8_lossy(&out.stdout)
+            ),
+        )?;
         Ok(())
     }
 
     /// Runs `make` in the assembly environment.
     fn make(&self) -> Result<(), BuildError> {
         let out = Command::new("make")
+            .arg("-B")
+            .env("RISCV", &self.riscv_toolpath)
             .current_dir(&self.assembly_environment)
             .output()?;
         if !out.status.success() {
@@ -127,7 +136,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("snippet_test_{}", rand_id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("Makefile"), makefile).unwrap();
-        (dir.clone(), SnippetBuilder::new(dir, decoder.into()))
+        (
+            dir.clone(),
+            SnippetBuilder::new(dir, decoder.into(), "/opt/riscv".into()),
+        )
     }
 
     fn rand_id() -> u128 {
@@ -142,6 +154,14 @@ mod tests {
         let (dir, mut b) = env("/bin/cat", "snippet.elf: src/snippet.S\n\tcp $< $@\n");
         let elf = b.build(b"nop\n").unwrap();
         assert_eq!(std::fs::read(elf).unwrap(), b"nop\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_receives_riscv_variable() {
+        let (dir, mut b) = env("/bin/cat", "snippet.elf:\n\techo $$RISCV > $@\n");
+        let elf = b.build(b"x").unwrap();
+        assert_eq!(std::fs::read_to_string(elf).unwrap().trim(), "/opt/riscv");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

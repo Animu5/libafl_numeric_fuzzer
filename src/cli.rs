@@ -28,6 +28,10 @@ pub struct Args {
     #[arg(short = 'd', long)]
     atndecode_path: Option<PathBuf>,
 
+    /// RISC-V toolchain directory, passed to `make` as the `RISCV` environment variable
+    #[arg(long)]
+    riscv_toolpath: Option<PathBuf>,
+
     /// Directory where inputs with a new best measurement are stored
     #[arg(short, long)]
     solutions_path: Option<PathBuf>,
@@ -62,6 +66,7 @@ pub struct Args {
 pub struct Config {
     pub assembly_environment: PathBuf,
     pub atndecode_path: PathBuf,
+    pub riscv_toolpath: PathBuf,
     pub solutions_path: PathBuf,
     pub seed: Option<PathBuf>,
     pub log_file: PathBuf,
@@ -104,6 +109,10 @@ impl Args {
         Config {
             assembly_environment,
             atndecode_path,
+            riscv_toolpath: require(
+                "riscv-toolpath",
+                self.riscv_toolpath.or(file.riscv_toolpath),
+            ),
             solutions_path: require(
                 "solutions-path",
                 self.solutions_path.or(file.solutions_path),
