@@ -10,85 +10,31 @@ The program communicates with the target through the OpenOCD Tcl interface.
 
 ## Current Implementation
 
-The current implementation:
+For every fuzz input the fuzzer:
 
-* connects to OpenOCD through TCP;
-* uses the OpenOCD Tcl interface on port `6666`;
-* loads an ELF program onto the target;
-* writes fuzz input bytes into target RAM;
-* resets the program counter before each execution;
-* resumes target execution;
-* reads a numeric measurement from the oscilloscope (VISA);
-* treats an input as interesting when it produces a value higher than the previous best value;
-* creates a `solutions/` directory and configures it as the LibAFL solutions corpus.
+1. pipes the bitstream into `atndecode`, which produces RISC-V assembly (`<assembly-environment>/src/snippet.S`);
+2. runs `make` in the assembly environment (with `RISCV` set to `--riscv-toolpath`) to build `snippet.elf`;
+3. resets the target through OpenOCD and loads the ELF;
+4. measures the idle level on the oscilloscope (VISA) while the target is halted;
+5. resumes the target (the programs are infinite loops), waits `--settle-ms` and measures the running level;
+6. scores the input by `running - idle` and treats it as interesting if it is a new best.
 
-The corpus starts with a seed input (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Each input is written to target RAM before the run.
+Inputs that cannot be decoded or built are logged and skipped. OpenOCD errors and repeated measurement failures abort the run.
+
+The corpus starts with a seed (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Inputs with a new best delta are saved to the solutions directory with the delta in the file name.
 
 ## Project Files
 
-The main code is inside the `src` folder.
-
-* `main.rs` contains the LibAFL setup, numeric feedback, measurement logic and fuzzing loop.
-* `openocd.rs` contains the functions used to communicate with OpenOCD.
-
-The repository also contains:
-
-* `Cargo.toml` and `Cargo.lock` for the Rust dependencies;
-* `solutions/`, which is created automatically when the program runs and is configured as the LibAFL solutions corpus;
-* `RUNNING.md` with the setup and execution steps;
-* `TODO.md` with the remaining work.
-
-The current numeric feedback is used as normal corpus feedback. Therefore, inputs that produce a new best measurement are treated as interesting and added to the in-memory corpus. They are not currently written to the `solutions/` directory.
-
-## How the Current Version Works
-
-When the program starts, it connects to OpenOCD at:
-
-`127.0.0.1:6666`
-
-It then loads the target program from:
-
-`<assembly-environment>/snippet.elf`
-
-The current code uses:
-
-* `0x80000000` as the program start address;
-* `0x80010000` as the RAM address for the fuzz input.
-
-Before the fuzzing loop starts, the program:
-
-1. resets and initializes the target;
-2. loads the ELF program;
-3. sets the program counter to `0x80000000`;
-4. reads an idle measurement from the oscilloscope;
-5. resumes the target;
-6. waits for 100 milliseconds;
-7. reads a running measurement from the oscilloscope.
-
-Once a seed input is available, each fuzzing iteration is intended to:
-
-1. save the current input as `current_input.bin`;
-2. reset and initialize the target through OpenOCD;
-3. write the input into target RAM;
-4. set the program counter;
-5. resume the target;
-6. wait for 100 milliseconds;
-7. after the target execution finishes, the numeric feedback reads the latest value from the oscilloscope.
-
-If the new measurement is higher than the previous best value, the input is treated as interesting and added to the in-memory corpus.
+* `src/main.rs`: wiring of config, OpenOCD, scope and LibAFL;
+* `src/cli.rs`: arguments and TOML config;
+* `src/harness.rs`: per-input build, load and idle/run measurement;
+* `src/snippet.rs`: `atndecode` and `make` steps;
+* `src/feedback.rs`: numeric feedback;
+* `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
+* `src/openocd.rs`: OpenOCD Tcl client;
+* `src/logging.rs`: file logging;
+* `fuzzer.example.toml`, `RUNNING.md` (setup and execution), `TODO.md` (remaining work).
 
 ## Current Limitations
 
-The current version is not yet a complete end-to-end setup.
-
-The main limitations are:
-
-* `ScopeMeasurement::measure` (arming and reading the scope) still has to be ported;
-* the correct OpenOCD interface and target configuration still need to be selected;
-* the hardware addresses still need to be confirmed on the final target;
-* the target program must be modified or confirmed to read input from `0x80010000`;
-* the full setup has not been tested on the final hardware.
-
-The remaining work is listed in `TODO.md`.
-
-The setup and run instructions are provided in `RUNNING.md`.
+The full setup has not yet been tested end to end on the final hardware, and the OpenOCD interface and target configuration still need to be confirmed. See `TODO.md`.
