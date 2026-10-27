@@ -1,27 +1,25 @@
-use std::fs::read_to_string;
+use crate::scope::Scope;
 
 pub trait Measurement {
-    fn measure(&self) -> f64;
+    fn measure(&mut self) -> Result<f64, String>;
 }
 
-#[derive(Clone, Debug)]
-pub struct FileMeasurement {
-    path: String,
+/// Oscilloscope measurement. Port the arming/readout logic into `measure`.
+pub struct ScopeMeasurement {
+    #[allow(dead_code)]
+    scope: Scope,
 }
 
-impl FileMeasurement {
-    pub(crate) fn new(path: &str) -> Self {
-        Self {
-            path: path.to_string(),
-        }
+impl ScopeMeasurement {
+    pub fn new(scope: Scope) -> Self {
+        Self { scope }
     }
 }
 
-impl Measurement for FileMeasurement {
-    fn measure(&self) -> f64 {
-        match read_to_string(&self.path) {
-            Ok(s) => s.trim().parse::<f64>().unwrap_or(0.0),
-            Err(_) => 0.0,
-        }
+impl Measurement for ScopeMeasurement {
+    fn measure(&mut self) -> Result<f64, String> {
+        // TODO: arm the scope, wait for acquisition and return the mean value
+        // (e.g. via self.scope.write(..) / self.scope.query(..)).
+        Err("ScopeMeasurement::measure is not implemented yet".to_string())
     }
 }

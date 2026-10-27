@@ -1,194 +1,158 @@
+mod cli;
+mod feedback;
+mod harness;
+mod logging;
 mod measurement;
 mod openocd;
+mod scope;
 
 use clap::Parser;
+use cli::Args;
+use feedback::{NumericFeedback, Shared};
+use harness::Harness;
 use libafl::mutators::{havoc_mutations, HavocScheduledMutator};
 use libafl::{
-    corpus::{InMemoryCorpus, OnDiskCorpus},
+    corpus::OnDiskCorpus,
     events::SimpleEventManager,
-    executors::{ExitKind, InProcessExecutor},
-    feedbacks::{Feedback, StateInitializer},
-    fuzzer::{Fuzzer, StdFuzzer},
-    inputs::{BytesInput, HasTargetBytes},
-    monitors::NopMonitor,
+    executors::InProcessExecutor,
+    fuzzer::{Evaluator, Fuzzer, StdFuzzer},
+    inputs::BytesInput,
+    monitors::TuiMonitor,
     schedulers::QueueScheduler,
     stages::mutational::StdMutationalStage,
     state::StdState,
     Error,
 };
-use libafl_bolts::{current_nanos, rands::StdRand, tuples::tuple_list, AsSlice, Named};
-use measurement::{FileMeasurement, Measurement};
-use std::{borrow::Cow, fs::write, path::PathBuf, thread, time::Duration};
+use libafl_bolts::{current_nanos, rands::StdRand, tuples::tuple_list};
+use measurement::{Measurement, ScopeMeasurement};
 use openocd::OpenOcd;
+use scope::Scope;
+use std::{path::Path, rc::Rc, time::Duration};
 
-#[derive(Parser, Debug)]
-#[command(version, long_version = None, about, long_about = None)]
-struct Args{
-    /// Path to executable to fuzz
-    #[arg(short, long)]
-    executable: PathBuf,
-
-    /// Path to assembly environment
-    #[arg(short, long)]
-    assembly_environment: PathBuf,
-
-    /// Path to atndecode
-    #[arg(short, long)]
-    atndecode_path: PathBuf,
-
-    /// Directory of best snippets
-    #[arg(short, long)]
-    solutions_path: PathBuf,
+fn context<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
+    move |e| Error::illegal_state(format!("{what}: {e}"))
 }
 
-#[derive(Clone, Debug)]
-struct NumericFeedback<M: Measurement> {
-    best: f64,
-    measurement: M,
-    name: Cow<'static, str>,
-}
+/// Loads the seed file, or every regular non-hidden file in the seed directory (sorted by name).
+/// Without a path, a single 16-byte zero input is used.
+fn load_seeds(path: Option<&Path>) -> Result<Vec<BytesInput>, Error> {
+    let Some(path) = path else {
+        return Ok(vec![BytesInput::new(vec![0u8; 16])]);
+    };
 
-impl<M: Measurement> NumericFeedback<M> {
-    fn new(measurement: M) -> Self {
-        Self {
-            best: f64::MIN,
-            measurement,
-            name: Cow::Borrowed("NumericFeedback"),
+    let mut files = if path.is_dir() {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(path).map_err(context("Could not read seed directory"))? {
+            let entry = entry.map_err(context("Could not read seed directory"))?;
+            let hidden = entry.file_name().to_string_lossy().starts_with('.');
+            if entry.path().is_file() && !hidden {
+                files.push(entry.path());
+            }
         }
+        files.sort();
+        files
+    } else {
+        vec![path.to_path_buf()]
+    };
+
+    if files.is_empty() {
+        return Err(Error::illegal_argument(format!(
+            "No seed files found in {}",
+            path.display()
+        )));
     }
-}
-
-impl<M: Measurement> Named for NumericFeedback<M> {
-    fn name(&self) -> &Cow<'static, str> {
-        &self.name
-    }
-}
-
-impl<S, M: Measurement> StateInitializer<S> for NumericFeedback<M> {}
-
-impl<EM, I, OT, S, M: Measurement> Feedback<EM, I, OT, S> for NumericFeedback<M> {
-    fn is_interesting(
-        &mut self,
-        _state: &mut S,
-        _manager: &mut EM,
-        _input: &I,
-        _observers: &OT,
-        _exit_kind: &ExitKind,
-    ) -> Result<bool, Error> {
-        let value = self.measurement.measure();
-
-        if value > self.best {
-            self.best = value;
-            println!("New best measurement: {}", value);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn last_result(&self) -> Result<bool, Error> {
-        Ok(false)
-    }
+    files
+        .drain(..)
+        .map(|f| {
+            std::fs::read(&f)
+                .map(BytesInput::new)
+                .map_err(context("Could not read seed file"))
+        })
+        .collect()
 }
 
 fn main() -> Result<(), Error> {
     let args = Args::parse();
 
-    if args.solutions_path.exists() && !args.solutions_path.is_dir() {
-        panic!("Solutions path exists but is not a directory");
+    if args.list_scopes {
+        let list = Scope::list_resources("USB?*INSTR").map_err(context("VISA error"))?;
+        list.iter().for_each(|r| println!("{r}"));
+        return Ok(());
     }
-    std::fs::create_dir_all(&args.solutions_path).expect("Failed to create solutions directory.");
 
-    let binary_path = args.executable;
+    let config = args.resolve();
+    logging::init(&config.log_file).map_err(context("Could not open log file"))?;
 
-    let program_start_addr: u32 = 0x80000000;
+    if config.solutions_path.exists() && !config.solutions_path.is_dir() {
+        return Err(Error::illegal_argument(
+            "Solutions path exists but is not a directory",
+        ));
+    }
+    std::fs::create_dir_all(&config.solutions_path)
+        .map_err(context("Creating solutions directory"))?;
 
-    // Connect to OpenOCD only once.
-    let mut openocd = OpenOcd::new("127.0.0.1:6666").expect("Could not connect to OpenOCD.");
-
-    // Load ELF program using OpenOCD `load`.
+    // Connect to OpenOCD only once and load the ELF program.
+    let mut openocd =
+        OpenOcd::new(&config.openocd_addr).map_err(context("Could not connect to OpenOCD"))?;
     openocd
-        .load_program(&binary_path, program_start_addr)
-        .expect("Failed to load program.");
+        .load_program(&config.executable)
+        .map_err(context("Failed to load program"))?;
 
-    // Measure idle power before running.
-    let idle_measurement = FileMeasurement::new("power.txt");
-    let idle_power = idle_measurement.measure();
-    println!("Idle power: {}", idle_power);
+    let scope = Scope::connect(
+        &config.scope_resource,
+        Duration::from_millis(config.scope_timeout_ms),
+    )
+    .map_err(context("Could not connect to scope"))?;
+    let measurement: Box<dyn Measurement> = Box::new(ScopeMeasurement::new(scope));
 
-    // Resume once to get running measurement.
-    openocd.resume().expect("Failed to resume target");
+    let seeds = load_seeds(config.seed.as_deref())?;
 
-    thread::sleep(Duration::from_millis(100));
-
-    let running_measurement = FileMeasurement::new("power.txt");
-    let running_power = running_measurement.measure();
-    println!("Running power: {}", running_power);
-
-    let rand = StdRand::with_seed(current_nanos());
-
-    let corpus = InMemoryCorpus::<BytesInput>::new();
-    let solutions = OnDiskCorpus::new(args.solutions_path)?;
-
-    let measurement = FileMeasurement::new("power.txt");
-    let mut feedback = NumericFeedback::new(measurement);
-
-    let mut objective = ();
-
-    let mut state = StdState::new(rand, corpus, solutions, &mut feedback, &mut objective)?;
-
-    let scheduler = QueueScheduler::new();
-
-    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
-
-    let monitor = NopMonitor::new();
-    let mut manager = SimpleEventManager::new(monitor);
-
-    let mut target = |input: &BytesInput| -> ExitKind {
-        let bytes = input.target_bytes();
-        let data = bytes.as_slice();
-
-        // Save current fuzz input locally for debugging.
-        if let Err(e) = write("current_input.bin", data) {
-            eprintln!("Failed to write current_input.bin: {}", e);
-            return ExitKind::Crash;
-        }
-
-        if let Err(e) = openocd.reset_init() {
-            eprintln!("OpenOCD reset init failed: {}", e);
-            return ExitKind::Crash;
-        }
-
-        // Reset program counter to program start.
-        if let Err(e) = openocd.set_pc(program_start_addr) {
-            eprintln!("Setting PC failed: {}", e);
-            return ExitKind::Crash;
-        }
-
-        // Resume target execution.
-        if let Err(e) = openocd.resume() {
-            eprintln!("OpenOCD resume failed: {}", e);
-            return ExitKind::Crash;
-        }
-
-        // Give the target some time to execute before measurement happens.
-        thread::sleep(Duration::from_millis(100));
-
-        ExitKind::Ok
+    let shared = Rc::new(Shared::default());
+    let mut harness = Harness {
+        openocd,
+        measurement,
+        shared: shared.clone(),
+        input_addr: config.input_addr,
+        settle: Duration::from_millis(config.settle_ms),
+        failures: 0,
     };
 
-    let mut executor = InProcessExecutor::new(
-        &mut target,
-        tuple_list!(),
-        &mut fuzzer,
-        &mut state,
-        &mut manager,
+    let corpus = OnDiskCorpus::<BytesInput>::new(&config.solutions_path)?;
+    let solutions = OnDiskCorpus::new(config.solutions_path.join("crashes"))?;
+
+    let mut feedback = NumericFeedback::new(shared);
+    let mut objective = ();
+    let mut state = StdState::new(
+        StdRand::with_seed(current_nanos()),
+        corpus,
+        solutions,
+        &mut feedback,
+        &mut objective,
     )?;
 
-    let mutator = HavocScheduledMutator::new(havoc_mutations());
-    let stage = StdMutationalStage::new(mutator);
-    let mut stages = tuple_list!(stage);
+    let mut fuzzer = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
 
+    let monitor = TuiMonitor::builder()
+        .title("Numeric Fuzzer")
+        .version(env!("CARGO_PKG_VERSION"))
+        .build();
+    let mut manager = SimpleEventManager::new(monitor);
+
+    let mut target = |input: &BytesInput| harness.run(input);
+    let mut executor = InProcessExecutor::builder()
+        .harness(&mut target)
+        .fuzzer(&mut fuzzer)
+        .state(&mut state)
+        .event_mgr(&mut manager)
+        .build()?;
+
+    for seed in seeds {
+        fuzzer.add_input(&mut state, &mut executor, &mut manager, seed)?;
+    }
+
+    let mut stages = tuple_list!(StdMutationalStage::new(HavocScheduledMutator::new(
+        havoc_mutations()
+    )));
     fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut manager)?;
 
     Ok(())
