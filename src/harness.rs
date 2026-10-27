@@ -12,7 +12,7 @@ use std::{rc::Rc, thread, time::Duration};
 /// Number of consecutive failed measurements tolerated before aborting.
 const MAX_MEASUREMENT_FAILURES: u32 = 5;
 
-/// Number of consecutive target failures (e.g. crashing snippets) tolerated before aborting.
+/// Number of consecutive target failures (e.g., crashing snippets) tolerated before aborting.
 const MAX_TARGET_FAILURES: u32 = 10;
 
 /// Runs one fuzz input on the target and records the scope's running-minus-idle delta in `shared`.
@@ -39,9 +39,9 @@ impl Harness {
         ExitKind::Ok
     }
 
-    /// Handles an OpenOCD error caused by the current input, e.g. a snippet that crashed or
-    /// wedged the target. Tries to reset the target; if that works the input is skipped,
-    /// otherwise (OpenOCD gone, target unrecoverable, too many failures in a row) the run aborts.
+    /// Handles an OpenOCD error caused by the current input, e.g., a snippet that crashed or
+    /// wedged the target. Tries to reset the target; if that works, the input is skipped,
+    /// otherwise (OpenOCD gone, target is unrecoverable, too many failures in a row) the run aborts.
     fn target_failed(&mut self, what: &str, err: std::io::Error) -> ExitKind {
         self.target_failures += 1;
         tracing::warn!("Skipping input, {what} failed: {err}");
