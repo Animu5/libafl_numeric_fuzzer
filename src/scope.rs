@@ -24,7 +24,7 @@ pub enum ScopeError {
     Write(io::Error),
     /// Reading a response failed.
     Read(io::Error),
-    /// No response arrived within the I/O timeout (e.g. the acquisition takes longer).
+    /// No response arrived within the I/O timeout (e.g., the acquisition takes longer).
     Timeout { command: String, timeout: Duration },
 }
 
@@ -61,6 +61,13 @@ pub struct Scope {
     _rm: DefaultRM,
     /// Currently configured VISA I/O timeout.
     timeout: Duration,
+}
+
+impl Drop for Scope {
+    /// Leaves the scope without pending data so the next connection starts cleanly.
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 impl Scope {
@@ -107,9 +114,27 @@ impl Scope {
             timeout: Duration::ZERO,
         };
         scope.set_timeout(timeout)?;
-        let idn = scope.query("*IDN?")?;
+
+        // A previous run may have died mid-transfer and left stale data or a protocol error
+        // on the instrument, so start from a cleared device.
+        scope.clear();
+        let idn = match scope.query("*IDN?") {
+            Ok(idn) => idn,
+            Err(e) => {
+                tracing::warn!("*IDN? failed ({e}); clearing the scope and retrying");
+                scope.clear();
+                scope.query("*IDN?")?
+            }
+        };
         tracing::info!("Connected to scope: {}", idn);
         Ok(scope)
+    }
+
+    /// Clears the instrument's I/O buffers (VISA device clear). Failures are only logged.
+    fn clear(&self) {
+        if let Err(e) = self.instr.clear() {
+            tracing::warn!("Could not clear scope buffers: {e}");
+        }
     }
 
     /// Sets the VISA I/O timeout used by all following reads and writes.
@@ -143,9 +168,7 @@ impl Scope {
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::TimedOut => {
                 // Drop buffered data so a late response is not mistaken for the next answer.
-                if let Err(e) = self.instr.clear() {
-                    tracing::warn!("Could not clear scope buffers after timeout: {e}");
-                }
+                self.clear();
                 return Err(ScopeError::Timeout {
                     command: cmd.to_string(),
                     timeout: self.timeout,
@@ -159,7 +182,7 @@ impl Scope {
     }
 
     /// Like [`Scope::query`], but waits up to `timeout` for the response.
-    /// The previous I/O timeout is restored afterwards.
+    /// The previous I/O timeout is restored afterward.
     pub fn query_with_timeout(
         &mut self,
         cmd: &str,
