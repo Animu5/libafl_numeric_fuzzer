@@ -39,11 +39,6 @@ impl Harness {
         let bytes = input.target_bytes();
         let data = bytes.to_slice();
 
-        // Save current fuzz input locally for debugging.
-        if let Err(e) = std::fs::write("current_input.bin", data) {
-            tracing::warn!("Failed to write current_input.bin: {}", e);
-        }
-
         // A candidate that cannot be decoded or built is skipped, not fatal.
         let elf = match self.builder.build(data) {
             Ok(elf) => elf,
