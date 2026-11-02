@@ -98,7 +98,7 @@ impl OpenOcd {
 
     /// Resets the target, loads the ELF, and halts it.
     pub fn load_program(&mut self, binary_path: &Path) -> io::Result<()> {
-        tracing::info!(
+        tracing::debug!(
             "Loading program: {}",
             binary_path.as_os_str().to_string_lossy()
         );
@@ -112,7 +112,7 @@ impl OpenOcd {
 
         self.halt()?;
 
-        tracing::info!("Program loaded successfully.");
+        tracing::debug!("Program loaded successfully.");
         Ok(())
     }
 
