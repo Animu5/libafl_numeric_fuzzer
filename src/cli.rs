@@ -32,7 +32,8 @@ pub struct Args {
     #[arg(long)]
     riscv_toolpath: Option<PathBuf>,
 
-    /// Directory where inputs with the new best measurement are stored
+    /// Directory where inputs with the new best measurement are stored,
+    /// as binary plus the matching assembly as `<name>.S` and `best.S`
     #[arg(short, long)]
     solutions_path: Option<PathBuf>,
 

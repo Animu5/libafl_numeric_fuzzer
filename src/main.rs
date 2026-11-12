@@ -139,7 +139,7 @@ fn main() -> Result<(), Error> {
     let corpus = OnDiskCorpus::<BytesInput>::new(&config.solutions_path)?;
     let solutions = OnDiskCorpus::new(config.solutions_path.join("crashes"))?;
 
-    let mut feedback = NumericFeedback::new(shared);
+    let mut feedback = NumericFeedback::new(shared, config.solutions_path.clone());
     let mut objective = ();
     let mut state = StdState::new(
         StdRand::with_seed(current_nanos()),

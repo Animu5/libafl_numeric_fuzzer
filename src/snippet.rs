@@ -42,6 +42,8 @@ pub struct SnippetBuilder {
     archive_dir: Option<PathBuf>,
     /// Number of snippets decoded so far, used for the archive file names.
     count: u64,
+    /// Assembly text of the last successful decode.
+    last_assembly: Option<String>,
 }
 
 impl SnippetBuilder {
@@ -56,7 +58,13 @@ impl SnippetBuilder {
             riscv_toolpath,
             archive_dir: None,
             count: 0,
+            last_assembly: None,
         }
+    }
+
+    /// Assembly text (with the `init.inc` include) of the last successful decode.
+    pub fn last_assembly(&self) -> Option<&str> {
+        self.last_assembly.as_deref()
     }
 
     /// Also saves every decoded snippet in `dir` (created if missing).
@@ -135,6 +143,7 @@ impl SnippetBuilder {
         std::fs::write(source, &assembly)?;
 
         self.count += 1;
+        self.last_assembly = Some(assembly.clone());
         if let Some(dir) = &self.archive_dir {
             let copy = dir.join(format!("{:06}.S", self.count));
             std::fs::write(&copy, &assembly)?;

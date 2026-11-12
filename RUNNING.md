@@ -98,7 +98,7 @@ See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
 The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
-Inputs with a new best F1 delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name.
+Inputs with a new best F1 delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name. Each saved input is also stored as assembly, next to the binary input as `<name>.S` (ready to assemble: it includes `init.inc`). The assembly of the current best input is kept in `best.S`, so on an interrupt (Ctrl-C) the best snippet so far is always on disk.
 
 ## Logging
 

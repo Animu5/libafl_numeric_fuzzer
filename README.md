@@ -21,7 +21,7 @@ For every fuzz input the fuzzer:
 
 Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
-The corpus starts with a seed (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Inputs with a new best delta are saved to the solutions directory with the delta in the file name.
+The corpus starts with a seed (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Inputs with a new best delta are saved to the solutions directory with the delta in the file name. Every saved input is accompanied by its decoded assembly as `<name>.S`, and the assembly of the current best input is kept up to date as `best.S`, so the best snippet survives an interrupt (Ctrl-C).
 
 ## Project Files
 
