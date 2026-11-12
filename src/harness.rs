@@ -72,6 +72,7 @@ impl Harness {
                 return ExitKind::Ok;
             }
         };
+        *self.shared.assembly.borrow_mut() = self.builder.last_assembly().map(str::to_string);
 
         if let Err(e) = self.openocd.load_program(&elf) {
             return self.target_failed("loading the program", e);
