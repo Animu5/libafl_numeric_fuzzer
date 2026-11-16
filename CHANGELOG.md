@@ -10,7 +10,8 @@ Notable changes are summarized here. Earlier history is available in Git.
 - Define a candidate evaluation backend contract with validated power and toggle
   metrics.
 - Add a Unix simulation backend that runs a supplied simulator and analyzes its
-  VCD with `vcdtogglerate`; backend selection is not yet available.
+  VCD with `vcdtogglerate`, selectable through CLI or TOML.
+- Allow simulation-only builds without NI-VISA via `--no-default-features`.
 - Supervise simulation subprocesses and temporary traces so they are cleaned up
   if the fuzzer exits during simulation or analysis.
 
