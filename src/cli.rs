@@ -57,6 +57,22 @@ pub struct Args {
     #[arg(long)]
     log_file: Option<PathBuf>,
 
+    /// Number of independent simulation workers (default: 1)
+    #[arg(long)]
+    workers: Option<usize>,
+
+    /// Dedicated assembly environment for each worker; repeat once per worker
+    #[arg(long)]
+    worker_assembly_environment: Option<Vec<PathBuf>>,
+
+    /// Dedicated simulator working directory for each worker; repeat once per worker
+    #[arg(long)]
+    worker_simulator_working_dir: Option<Vec<PathBuf>>,
+
+    #[arg(long, hide = true)]
+    #[serde(skip)]
+    pub internal_worker_index: Option<usize>,
+
     /// Evaluation backend (default: hardware)
     #[arg(long, value_enum)]
     backend: Option<BackendKind>,
@@ -130,6 +146,13 @@ pub struct Config {
     pub log_file: PathBuf,
     pub backend: BackendConfig,
     pub exec_timeout_ms: u64,
+    pub worker_dirs: Option<Vec<WorkerDirs>>,
+}
+
+#[derive(Debug)]
+pub struct WorkerDirs {
+    pub assembly: PathBuf,
+    pub simulator: PathBuf,
 }
 
 #[derive(Debug)]
@@ -166,7 +189,12 @@ impl Args {
             Some(path) => load_file(path).unwrap_or_else(|e| fail(e)),
             None => Args::default(),
         };
-        self.merge(file).unwrap_or_else(|e| fail(e))
+        let worker_index = self.internal_worker_index;
+        let mut config = self.merge(file).unwrap_or_else(|e| fail(e));
+        if let Some(index) = worker_index {
+            config.select_worker(index).unwrap_or_else(|e| fail(e));
+        }
+        config
     }
 
     fn merge(self, file: Args) -> Result<Config, String> {
@@ -277,6 +305,54 @@ impl Args {
             }
         };
 
+        let workers = self.workers.or(file.workers).unwrap_or(1);
+        let builds = self
+            .worker_assembly_environment
+            .or(file.worker_assembly_environment)
+            .unwrap_or_default();
+        let simulators = self
+            .worker_simulator_working_dir
+            .or(file.worker_simulator_working_dir)
+            .unwrap_or_default();
+        let worker_dirs = if workers == 1 {
+            if !builds.is_empty() || !simulators.is_empty() {
+                return Err("Worker directory lists require --workers greater than 1".into());
+            }
+            None
+        } else {
+            if workers == 0 || !matches!(backend, BackendConfig::Simulation { .. }) {
+                return Err(
+                    "Parallel workers require --workers >= 2 and the simulation backend".into(),
+                );
+            }
+            if builds.len() != workers || simulators.len() != workers {
+                return Err("Provide one worker assembly environment and simulator working directory per worker".into());
+            }
+            let mut dirs = Vec::with_capacity(workers);
+            for (assembly, simulator) in builds.into_iter().zip(simulators) {
+                let assembly = canonical_directory(&assembly)?;
+                let simulator = canonical_directory(&simulator)?;
+                for previous in &dirs {
+                    let previous: &WorkerDirs = previous;
+                    for first in [&assembly, &simulator] {
+                        for second in [&previous.assembly, &previous.simulator] {
+                            if first.starts_with(second) || second.starts_with(first) {
+                                return Err(format!(
+                                    "Worker directories overlap: {} and {}",
+                                    first.display(),
+                                    second.display()
+                                ));
+                            }
+                        }
+                    }
+                }
+                dirs.push(WorkerDirs {
+                    assembly,
+                    simulator,
+                });
+            }
+            Some(dirs)
+        };
         Ok(Config {
             assembly_environment,
             atndecode_path,
@@ -296,7 +372,45 @@ impl Args {
                 .unwrap_or_else(|| "fuzzer.log".into()),
             backend,
             exec_timeout_ms,
+            worker_dirs,
         })
+    }
+}
+
+fn canonical_directory(path: &Path) -> Result<PathBuf, String> {
+    let path = std::fs::canonicalize(path)
+        .map_err(|e| format!("Cannot resolve worker directory {}: {e}", path.display()))?;
+    if !path.is_dir() {
+        return Err(format!(
+            "Worker path is not a directory: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+impl Config {
+    fn select_worker(&mut self, index: usize) -> Result<(), String> {
+        let dirs = self
+            .worker_dirs
+            .take()
+            .ok_or("Worker index requires parallel configuration")?;
+        let worker = dirs.get(index).ok_or("Worker index out of range")?;
+        self.assembly_environment = worker.assembly.clone();
+        match &mut self.backend {
+            BackendConfig::Simulation {
+                simulator_working_dir,
+                ..
+            } => *simulator_working_dir = worker.simulator.clone(),
+            _ => return Err("Parallel workers require simulation".into()),
+        }
+        let name = format!("worker-{index:04}");
+        self.solutions_path = self.solutions_path.join(&name);
+        self.snippet_dir = self.snippet_dir.take().map(|dir| dir.join(&name));
+        let mut log = self.log_file.as_os_str().to_os_string();
+        log.push(format!(".{name}"));
+        self.log_file = log.into();
+        Ok(())
     }
 }
 
@@ -424,6 +538,31 @@ mod tests {
         .unwrap();
         let config = cli.merge(file).unwrap();
         assert!(matches!(config.backend, BackendConfig::Hardware { .. }));
+    }
+
+    #[test]
+    fn parallel_worker_paths_are_isolated_and_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let mut args = simulation();
+        args.workers = Some(2);
+        args.worker_assembly_environment = Some(vec![a.clone(), b.clone()]);
+        args.worker_simulator_working_dir = Some(vec![a.clone(), b.clone()]);
+        let mut config = args.merge(Args::default()).unwrap();
+        config.select_worker(1).unwrap();
+        assert_eq!(config.assembly_environment, b.canonicalize().unwrap());
+        assert!(config.solutions_path.ends_with("worker-0001"));
+        assert!(config.log_file.to_string_lossy().ends_with(".worker-0001"));
+        assert!(config.worker_dirs.is_none());
+
+        let mut args = simulation();
+        args.workers = Some(2);
+        args.worker_assembly_environment = Some(vec![a.clone(), a.clone()]);
+        args.worker_simulator_working_dir = Some(vec![a, b]);
+        assert!(args.merge(Args::default()).unwrap_err().contains("overlap"));
     }
 
     #[test]

@@ -9,6 +9,8 @@ mod logging;
 mod measurement;
 #[cfg(feature = "hardware")]
 mod openocd;
+#[cfg(unix)]
+mod parallel;
 #[cfg(feature = "hardware")]
 mod scope;
 #[cfg(unix)]
@@ -97,6 +99,10 @@ fn main() -> Result<(), Error> {
         std::process::exit(simulation::supervisor_main());
     }
     let args = Args::parse();
+    #[cfg(unix)]
+    if args.internal_worker_index.is_some() {
+        parallel::watch_parent();
+    }
 
     if args.list_scopes {
         #[cfg(feature = "hardware")]
@@ -112,6 +118,12 @@ fn main() -> Result<(), Error> {
     }
 
     let config = args.resolve();
+    if let Some(workers) = &config.worker_dirs {
+        #[cfg(unix)]
+        return parallel::launch(workers.len()).map_err(context("Parallel workers failed"));
+        #[cfg(not(unix))]
+        return Err(Error::illegal_argument("Parallel workers require Unix"));
+    }
     logging::init(&config.log_file).map_err(context("Could not open log file"))?;
 
     if config.solutions_path.exists() && !config.solutions_path.is_dir() {

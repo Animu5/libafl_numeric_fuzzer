@@ -130,6 +130,24 @@ impl SimulationBackend {
             .map(|arg| expand(arg, elf, vcd));
         let mut simulator = Command::new(&self.config.simulator);
         simulator.current_dir(&self.config.working_dir).args(args);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                simulator.pre_exec(|| {
+                    let mut limits = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                    if libc::getrlimit(libc::RLIMIT_CORE, limits.as_mut_ptr()) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    let mut limits = limits.assume_init();
+                    limits.rlim_cur = 0;
+                    if libc::setrlimit(libc::RLIMIT_CORE, &limits) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let output = run_process(&mut simulator, self.config.simulator_timeout, cancelled)
             .map_err(|e| EvaluationError::Fatal(format!("Simulator process: {e}")))?;
         if output.timed_out {
@@ -138,7 +156,7 @@ impl SimulationBackend {
                 output.diagnostic()
             )));
         }
-        if !output.status.success() {
+        if !output.status.success() && !output.chipyard_cycle_limit() {
             return Err(EvaluationError::Candidate(format!(
                 "Simulator exited {}: {}",
                 output.status,
@@ -346,6 +364,26 @@ impl ProcessOutput {
             String::from_utf8_lossy(&self.stdout)
         )
     }
+
+    #[cfg(unix)]
+    fn chipyard_cycle_limit(&self) -> bool {
+        use std::os::unix::process::ExitStatusExt;
+        if self.status.code() != Some(255) && self.status.signal() != Some(libc::SIGABRT) {
+            return false;
+        }
+        String::from_utf8_lossy(&self.stderr).lines().any(|line| {
+            let Some(rest) = line.strip_prefix("*** FAILED ***") else {
+                return false;
+            };
+            let Some(cycles) = rest.trim().strip_prefix("(timeout) after") else {
+                return false;
+            };
+            let Some(cycles) = cycles.trim().strip_suffix(" simulation cycles") else {
+                return false;
+            };
+            !cycles.is_empty() && cycles.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    }
 }
 
 fn read_bounded(mut reader: impl Read) -> io::Result<(Vec<u8>, bool)> {
@@ -362,6 +400,22 @@ fn read_bounded(mut reader: impl Read) -> io::Result<(Vec<u8>, bool)> {
         truncated |= keep < count;
     }
     Ok((output, truncated))
+}
+
+fn read_bounded_tail(mut reader: impl Read) -> io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(output);
+        }
+        let excess = (output.len() + count).saturating_sub(OUTPUT_LIMIT);
+        if excess != 0 {
+            output.drain(..excess);
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
 }
 
 #[cfg(unix)]
@@ -384,7 +438,7 @@ fn run_process(
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let out_thread = thread::spawn(move || read_bounded(stdout));
-    let err_thread = thread::spawn(move || read_bounded(stderr));
+    let err_thread = thread::spawn(move || read_bounded_tail(stderr));
     let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
@@ -422,7 +476,7 @@ fn run_process(
     let status = status?;
     cleanup?;
     let (stdout, stdout_truncated) = stdout?;
-    let (stderr, _) = stderr?;
+    let stderr = stderr?;
     Ok(ProcessOutput {
         status,
         timed_out,
@@ -543,7 +597,10 @@ mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt};
 
+    static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct Fixture {
+        _guard: std::sync::MutexGuard<'static, ()>,
         dir: tempfile::TempDir,
         elf: PathBuf,
         simulator: PathBuf,
@@ -552,12 +609,14 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            let guard = FIXTURE_LOCK.lock().unwrap();
             let dir = tempfile::tempdir().unwrap();
             let elf = dir.path().join("candidate with space.elf");
             let simulator = dir.path().join("simulator");
             let analyzer = dir.path().join("analyzer");
             fs::write(&elf, b"ELF").unwrap();
             Self {
+                _guard: guard,
                 dir,
                 elf,
                 simulator,
@@ -627,6 +686,47 @@ printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
     }
 
     #[test]
+    fn chipyard_cycle_limit_is_analyzed_but_other_failures_are_rejected() {
+        let fixture = Fixture::new();
+        fixture.success_scripts();
+        let mut backend = SimulationBackend::new(fixture.config()).unwrap();
+
+        for termination in ["exit 255", "kill -ABRT $$"] {
+            Fixture::script(
+                &fixture.simulator,
+                &format!(
+                    "printf waveform > \"$2\"\n\
+                     head -c 70000 /dev/zero | tr '\\0' x >&2\n\
+                     printf '\\n*** FAILED ***   (timeout) after     1001 simulation cycles\\n' >&2\n\
+                     {termination}"
+                ),
+            );
+            assert_eq!(backend.evaluate(&fixture.elf).unwrap().score(), 0.75);
+        }
+
+        for (marker, termination) in [
+            (
+                "*** FAILED *** (timeout) after 1001 simulation cycles",
+                "exit 1",
+            ),
+            (
+                "*** FAILED *** (timeout) after nope simulation cycles",
+                "exit 255",
+            ),
+            ("*** FAILED *** other error", "kill -ABRT $$"),
+        ] {
+            Fixture::script(
+                &fixture.simulator,
+                &format!("printf waveform > \"$2\"; echo '{marker}' >&2; {termination}"),
+            );
+            assert!(matches!(
+                backend.evaluate(&fixture.elf),
+                Err(EvaluationError::Candidate(_))
+            ));
+        }
+    }
+
+    #[test]
     fn passes_placeholders_within_arguments_and_exclusions() {
         let fixture = Fixture::new();
         let excluded = fixture.dir.path().join("excluded signals.txt");
@@ -691,10 +791,11 @@ printf 'toggle_activity=0\ntoggle_coverage=1\n'
         Fixture::script(&fixture.simulator, "exit 0");
         let mut backend = SimulationBackend::new(fixture.config()).unwrap();
         for _ in 1..MAX_MEASUREMENT_FAILURES {
-            assert!(matches!(
-                backend.evaluate(&fixture.elf),
-                Err(EvaluationError::Measurement(_))
-            ));
+            let result = backend.evaluate(&fixture.elf);
+            assert!(
+                matches!(result, Err(EvaluationError::Measurement(_))),
+                "{result:?}"
+            );
         }
         assert!(matches!(
             backend.evaluate(&fixture.elf),
@@ -722,7 +823,7 @@ printf 'toggle_activity=0\ntoggle_coverage=1\n'
         let mut backend = SimulationBackend::new(fixture.config()).unwrap();
         for _ in 1..MAX_CANDIDATE_FAILURES {
             let error = backend.evaluate(&fixture.elf).unwrap_err();
-            assert!(matches!(error, EvaluationError::Candidate(_)));
+            assert!(matches!(error, EvaluationError::Candidate(_)), "{error:?}");
             assert!(error.to_string().contains("failure"));
         }
         assert!(matches!(

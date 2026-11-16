@@ -26,6 +26,8 @@ For the default hardware backend it then:
 The simulation backend instead runs the ELF in the supplied simulator, analyzes
 its VCD, and maximizes toggle coverage while logging toggle activity. See
 `fuzzer.simulation.example.toml` and `RUNNING.md` for configuration.
+Independent parallel simulation workers can be configured with separate build
+and simulator directories; each keeps its own corpus and best score.
 
 Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 

@@ -132,8 +132,9 @@ Relative configured paths resolve from the fuzzer's starting directory, not the
 simulator working directory. Arguments are passed directly without a shell:
 `{elf}` and `{vcd}` are replaced within each argument by absolute paths. Both
 placeholders are required. The user must supply the Chipyard-specific flags,
-including the fixed-stop flag, and ensure the simulator exits successfully and
-flushes the specified VCD. No simulator flags are assumed.
+including the fixed-stop flag. The simulator must produce a usable VCD and either
+exit successfully or report the recognized Chipyard cycle-limit termination
+described below. No simulator flags are assumed.
 
 The TOML `simulator_arg` is an ordered array. On the command line, repeat
 `--simulator-arg=VALUE` for each argument; if any are supplied they replace
@@ -150,6 +151,20 @@ Keep the scope, exclusions and simulation window consistent between runs.
 Use separate solutions directories for hardware, simulation and changed
 simulation configurations, since their scores are not comparable.
 
+For Chipyard, provide `+max-cycles=<limit>`, `+vcdfile={vcd}` and, when
+using fast loading, `+loadmem={elf}` as simulator arguments, with `{elf}`
+also supplied as the positional binary. Wrap simulator plusargs in
+`+permissive` and `+permissive-off` as required by the host. Include
+`+dramsim` and `+dramsim_ini_dir=<path>` if needed. The backend accepts
+Chipyard's explicit cycle-limit timeout diagnostic with exit status 255 or
+SIGABRT by default, then analyzes the VCD; other nonzero exits and wall-clock
+timeouts remain failures. Successful simulator exits are also accepted, so a
+program finishing early can yield a shorter trace. Simulator core dumps are
+disabled. The limit must be configured explicitly and is checked after reset.
+An abort may leave a partially flushed VCD: a successful analyzer result does
+not prove the trace includes every cycle. Validate the trace window for the
+specific simulator and workload before comparing scores.
+
 Each evaluation uses a separate supervisor that owns the temporary VCD directory
 and monitors a parent-liveness pipe. On a subprocess timeout, or if the fuzzer
 exits during simulation or analysis, it terminates the active process group,
@@ -162,3 +177,28 @@ timeouts and are not supervised by this mechanism.
 A machine crash, termination of the supervisor itself, or subprocesses that
 deliberately leave their process group can still leave processes or artifacts
 behind.
+
+## Parallel simulation workers
+
+Set `workers = 2` (or `--workers 2`) and provide an ordered
+`worker_assembly_environment` and `worker_simulator_working_dir` array with one
+existing directory per worker. On the CLI, repeat
+`--worker-assembly-environment PATH` and `--worker-simulator-working-dir PATH`.
+The original `assembly_environment` remains required, but the per-worker
+directories are used when parallel workers are enabled.
+
+Create independent, complete copies of the build environment and simulator
+working directory yourself; the fuzzer does not copy them. Directories for
+different workers must not overlap. Avoid shared writable paths or symlinks inside
+those directories: canonical directory checks cannot detect a Makefile or simulator
+that writes to an external shared location. Parallel operation is available only
+for simulation, not a single shared hardware target.
+
+Each worker independently mutates seeds and keeps its own corpus, numeric best,
+and `best.S` under `<solutions_path>/worker-0000`, `worker-0001`, and so on.
+Workers do not exchange inputs or maintain a global best; compare their recorded
+scores to find the overall result. Snippet archives use the same subdirectories,
+and logs are named `<log_file>.worker-0000`, etc. Worker TUI output is suppressed.
+If a worker exits, the launcher stops the others and reports an error. When the
+launcher exits, workers and their active build processes are terminated; active
+simulation supervisors then clean up their own VCDs.
