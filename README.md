@@ -28,7 +28,8 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 * `src/main.rs`: wiring of config, OpenOCD, scope and LibAFL;
 * `src/cli.rs`: arguments and TOML config;
 * `src/harness.rs`: per-input build and evaluation dispatch;
-* `src/evaluation.rs`, `src/hardware.rs`: backend contract and hardware execution;
+* `src/evaluation.rs`, `src/hardware.rs`, `src/simulation.rs`: backend contract,
+  hardware execution and the simulation backend;
 * `src/snippet.rs`: `atndecode` and `make` steps;
 * `src/feedback.rs`: numeric feedback;
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
@@ -40,9 +41,9 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 
 The full setup has not yet been tested end to end on the final hardware, and the OpenOCD interface and target configuration still need to be confirmed. See `TODO.md`.
 
-The hardware path uses an evaluation backend interface; a simulation backend is
-not yet implemented.
-The planned simulation score is toggle coverage, a fraction rather than watts.
+The hardware path uses an evaluation backend interface. The simulation backend
+is implemented but cannot yet be selected from the command line or TOML.
+Its score is toggle coverage, a fraction rather than watts.
 `vcdtogglerate` may report zero when no counted bits or usable change time exist,
 so zero alone does not establish that the intended signals were measured.
 

@@ -127,3 +127,36 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 ## Source layout
 
 `cli.rs` (arguments/config), `logging.rs`, `feedback.rs` (numeric feedback), `harness.rs` (per-input build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `snippet.rs` (decode and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `main.rs` (wiring).
+
+## Simulation backend (not yet selectable)
+
+`simulation.rs` implements the Unix simulation backend; CLI/TOML selection is
+the next integration step. It accepts paths to the built simulator and
+`vcdtogglerate`, a simulator working directory, ordered simulator arguments, a
+target scope, an optional exclusion file, and separate process timeouts.
+Relative configured paths resolve from the fuzzer's starting directory, not the
+simulator working directory. Arguments are passed directly without a shell:
+`{elf}` and `{vcd}` are replaced within each argument by absolute paths. Both
+placeholders are required. The user must supply the Chipyard-specific flags,
+including the fixed-stop flag, and ensure the simulator exits successfully and
+flushes the specified VCD. No simulator flags are assumed.
+
+The backend runs `vcdtogglerate <VCD> --target-scope <scope>`, optionally with
+`--exclude-signal-file <path>`. It maximizes the reported `toggle_coverage`
+fraction and records `toggle_activity` in signal-level changes per simulated
+second. The analyzer uses the last change of a counted signal as its time
+denominator; it may report zero for an empty selection or missing timing.
+Keep the scope, exclusions and simulation window consistent between runs.
+
+Each evaluation uses a separate supervisor that owns the temporary VCD directory
+and monitors a parent-liveness pipe. On a subprocess timeout, or if the fuzzer
+exits during simulation or analysis, it terminates the active process group,
+reaps the direct child and removes the temporary directory. The supervisor is
+isolated from the fuzzer's terminal process group, so an interrupt to the fuzzer
+also closes the pipe. Configure LibAFL's outer timeout above build time plus both
+subprocess deadlines. The existing decoder and `make` still have no individual
+timeouts and are not supervised by this mechanism.
+
+A machine crash, termination of the supervisor itself, or subprocesses that
+deliberately leave their process group can still leave processes or artifacts
+behind.

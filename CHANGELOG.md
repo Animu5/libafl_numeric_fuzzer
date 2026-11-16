@@ -9,6 +9,10 @@ Notable changes are summarized here. Earlier history is available in Git.
 - Save the assembly for each new best input and keep `best.S` up to date.
 - Define a candidate evaluation backend contract with validated power and toggle
   metrics.
+- Add a Unix simulation backend that runs a supplied simulator and analyzes its
+  VCD with `vcdtogglerate`; backend selection is not yet available.
+- Supervise simulation subprocesses and temporary traces so they are cleaned up
+  if the fuzzer exits during simulation or analysis.
 
 ### Changed
 

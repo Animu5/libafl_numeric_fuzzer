@@ -7,6 +7,12 @@ mod logging;
 mod measurement;
 mod openocd;
 mod scope;
+#[cfg(unix)]
+#[allow(
+    dead_code,
+    reason = "The simulation backend will be selected in the configuration step"
+)]
+mod simulation;
 mod snippet;
 
 use clap::Parser;
@@ -79,6 +85,12 @@ fn load_seeds(path: Option<&Path>) -> Result<Vec<BytesInput>, Error> {
 
 /// Wires up OpenOCD, the scope, the LibAFL components and runs the fuzz loop.
 fn main() -> Result<(), Error> {
+    #[cfg(unix)]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--internal-simulation-supervisor"))
+    {
+        std::process::exit(simulation::supervisor_main());
+    }
     let args = Args::parse();
 
     if args.list_scopes {
