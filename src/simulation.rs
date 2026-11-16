@@ -566,8 +566,15 @@ mod tests {
         }
 
         fn script(path: &Path, content: &str) {
-            fs::write(path, format!("#!/bin/sh\n{content}\n")).unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+            let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+            use std::io::Write;
+            write!(file, "#!/bin/sh\n{content}\n").unwrap();
+            file.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let (file, temporary_path) = file.keep().unwrap();
+            drop(file);
+            fs::rename(temporary_path, path).unwrap();
         }
 
         fn config(&self) -> SimulationConfig {

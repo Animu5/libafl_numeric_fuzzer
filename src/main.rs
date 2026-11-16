@@ -1,23 +1,25 @@
 mod cli;
 mod evaluation;
 mod feedback;
+#[cfg(feature = "hardware")]
 mod hardware;
 mod harness;
 mod logging;
+#[cfg(feature = "hardware")]
 mod measurement;
+#[cfg(feature = "hardware")]
 mod openocd;
+#[cfg(feature = "hardware")]
 mod scope;
 #[cfg(unix)]
-#[allow(
-    dead_code,
-    reason = "The simulation backend will be selected in the configuration step"
-)]
 mod simulation;
 mod snippet;
 
 use clap::Parser;
-use cli::Args;
+use cli::{Args, BackendConfig};
+use evaluation::EvaluationBackend;
 use feedback::{NumericFeedback, Shared};
+#[cfg(feature = "hardware")]
 use hardware::HardwareBackend;
 use harness::Harness;
 use libafl::mutators::{havoc_mutations, HavocScheduledMutator};
@@ -34,8 +36,11 @@ use libafl::{
     Error,
 };
 use libafl_bolts::{current_nanos, rands::StdRand, tuples::tuple_list};
+#[cfg(feature = "hardware")]
 use measurement::{Measurement, ScopeMeasurement};
+#[cfg(feature = "hardware")]
 use openocd::OpenOcd;
+#[cfg(feature = "hardware")]
 use scope::Scope;
 use snippet::SnippetBuilder;
 use std::{path::Path, rc::Rc, time::Duration};
@@ -94,9 +99,16 @@ fn main() -> Result<(), Error> {
     let args = Args::parse();
 
     if args.list_scopes {
-        let list = Scope::list_resources("USB?*INSTR").map_err(context("VISA error"))?;
-        list.iter().for_each(|r| println!("{r}"));
-        return Ok(());
+        #[cfg(feature = "hardware")]
+        {
+            let list = Scope::list_resources("USB?*INSTR").map_err(context("VISA error"))?;
+            list.iter().for_each(|r| println!("{r}"));
+            return Ok(());
+        }
+        #[cfg(not(feature = "hardware"))]
+        return Err(Error::illegal_argument(
+            "--list-scopes requires the hardware feature",
+        ));
     }
 
     let config = args.resolve();
@@ -110,22 +122,88 @@ fn main() -> Result<(), Error> {
     std::fs::create_dir_all(&config.solutions_path)
         .map_err(context("Creating solutions directory"))?;
 
-    // Connect to OpenOCD once; the harness loads a freshly built ELF for every input.
-    let openocd =
-        OpenOcd::new(&config.openocd_addr).map_err(context("Could not connect to OpenOCD"))?;
-
-    let scope = Scope::connect(
-        &config.scope_resource,
-        Duration::from_millis(config.scope_timeout_ms),
-    )
-    .map_err(context("Could not connect to scope"))?;
-    let measurement: Box<dyn Measurement> = Box::new(
-        ScopeMeasurement::new(
-            scope,
-            Duration::from_millis(config.scope_acquire_timeout_ms),
-        )
-        .map_err(context("Could not configure scope"))?,
-    );
+    let backend: Box<dyn EvaluationBackend> = match config.backend {
+        BackendConfig::Hardware {
+            openocd_addr,
+            scope_resource,
+            scope_timeout_ms,
+            scope_acquire_timeout_ms,
+            settle_ms,
+        } => {
+            #[cfg(feature = "hardware")]
+            {
+                let openocd =
+                    OpenOcd::new(&openocd_addr).map_err(context("Could not connect to OpenOCD"))?;
+                let scope =
+                    Scope::connect(&scope_resource, Duration::from_millis(scope_timeout_ms))
+                        .map_err(context("Could not connect to scope"))?;
+                let measurement: Box<dyn Measurement> = Box::new(
+                    ScopeMeasurement::new(scope, Duration::from_millis(scope_acquire_timeout_ms))
+                        .map_err(context("Could not configure scope"))?,
+                );
+                Box::new(HardwareBackend::new(
+                    openocd,
+                    measurement,
+                    Duration::from_millis(settle_ms),
+                ))
+            }
+            #[cfg(not(feature = "hardware"))]
+            {
+                let _ = (
+                    openocd_addr,
+                    scope_resource,
+                    scope_timeout_ms,
+                    scope_acquire_timeout_ms,
+                    settle_ms,
+                );
+                return Err(Error::illegal_argument(
+                    "Hardware backend requires the hardware feature",
+                ));
+            }
+        }
+        BackendConfig::Simulation {
+            simulator_path,
+            simulator_working_dir,
+            simulator_args,
+            analyzer_path,
+            target_scope,
+            exclude_signal_file,
+            simulator_timeout_ms,
+            analyzer_timeout_ms,
+        } => {
+            #[cfg(unix)]
+            {
+                let settings = simulation::SimulationConfig {
+                    simulator: simulator_path,
+                    simulator_args: simulator_args.into_iter().map(Into::into).collect(),
+                    working_dir: simulator_working_dir,
+                    analyzer: analyzer_path,
+                    target_scope,
+                    exclude_signal_file,
+                    simulator_timeout: Duration::from_millis(simulator_timeout_ms),
+                    analyzer_timeout: Duration::from_millis(analyzer_timeout_ms),
+                };
+                Box::new(
+                    simulation::SimulationBackend::new(settings)
+                        .map_err(context("Could not configure simulation"))?,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (
+                    simulator_path,
+                    simulator_working_dir,
+                    simulator_args,
+                    analyzer_path,
+                    target_scope,
+                    exclude_signal_file,
+                    simulator_timeout_ms,
+                    analyzer_timeout_ms,
+                );
+                return Err(Error::illegal_argument("Simulation backend requires Unix"));
+            }
+        }
+    };
 
     let seeds = load_seeds(config.seed.as_deref())?;
 
@@ -143,11 +221,7 @@ fn main() -> Result<(), Error> {
 
     let mut harness = Harness {
         builder,
-        backend: Box::new(HardwareBackend::new(
-            openocd,
-            measurement,
-            Duration::from_millis(config.settle_ms),
-        )),
+        backend,
         shared: shared.clone(),
     };
 

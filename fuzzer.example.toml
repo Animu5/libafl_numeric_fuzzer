@@ -8,6 +8,7 @@ seed = "/path/to/seeds"  # file or directory of seed files
 scope_timeout_ms = 20000
 
 # Optional (defaults shown)
+# backend = "hardware"
 # log_file = "fuzzer.log"
 # openocd_addr = "127.0.0.1:6666"
 # scope_acquire_timeout_ms = 30000

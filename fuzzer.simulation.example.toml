@@ -1,0 +1,19 @@
+# Example only: replace paths and supply Chipyard-specific flags before running.
+backend = "simulation"
+assembly_environment = "/path/to/snippet_build"
+atndecode_path = "/path/to/atnwalk/build/riscv64g/bin/decode"
+riscv_toolpath = "/path/to/riscv"
+solutions_path = "./simulation-solutions"
+
+simulator_path = "/path/to/chipyard/verilator-simulator"
+simulator_working_dir = "/path/to/chipyard/simulator/working-directory"
+# Replace with the simulator's actual ELF, VCD and fixed-stop flags.
+# Both {elf} and {vcd} must appear in the argument list.
+simulator_arg = ["{elf}", "{vcd}", "<ADD-FIXED-STOP-FLAGS>"]
+analyzer_path = "/path/to/vcdtogglerate"
+target_scope = "TOP.path.to.target"
+# exclude_signal_file = "/path/to/excluded-signals.txt"
+simulator_timeout_ms = 60000
+analyzer_timeout_ms = 30000
+# Must exceed both timeouts combined, plus time to build each ELF.
+exec_timeout_ms = 120000

@@ -2,30 +2,20 @@
 
 ## Requirements
 
-To build and run the current version, you need:
+Both backends need:
 
 * Rust and Cargo;
-* a local LibAFL source checkout;
-* OpenOCD with RISC-V target support;
-* an OpenOCD-compatible debug adapter;
-* a supported RISC-V target;
 * a RISC-V toolchain, `make` and the `atndecode` decoder;
-* an assembly environment directory with a Makefile that builds `snippet.elf` from `src/snippet.S`;
-* a Teledyne oscilloscope reachable through NI-VISA (USB).
+* an assembly environment directory with a Makefile that builds `snippet.elf` from `src/snippet.S`.
+
+The default hardware backend additionally needs OpenOCD, a debug adapter, a
+supported target, and a Teledyne oscilloscope reachable through NI-VISA.
+The Unix simulation backend needs a built Chipyard simulator and the
+`vcdtogglerate` executable.
 
 The full setup has not yet been tested on the final hardware.
 
-## Prepare the LibAFL Dependency
-
-`Cargo.toml` uses local path dependencies:
-
-```toml
-libafl = { path = "../LibAFL/crates/libafl", features = ["tui_monitor", "std"] }
-libafl_bolts = { path = "../LibAFL/crates/libafl_bolts" }
-```
-The LibAFL repository must be placed in the same parent folder as the `libafl_fuzzer` project. This is required because `Cargo.toml` uses local paths to access the LibAFL crates.
-
-If LibAFL is stored somewhere else, update the paths in `Cargo.toml` before building.
+LibAFL dependencies are specified in `Cargo.toml`.
 
 ## Build the Project
 
@@ -55,6 +45,9 @@ cargo build --release
 ```
 
 If the build succeeds, the compiled files will be created in the `target` directory.
+For a simulation-only build without the NI-VISA dependency, use
+`cargo build --release --no-default-features`. Such a build cannot select
+hardware or use `--list-scopes`.
 
 ## Prepare the Build Environment
 
@@ -64,7 +57,8 @@ Set these in the config file or on the command line:
 * `atndecode_path`: decoder that reads the bitstream on stdin and writes assembly to stdout;
 * `riscv_toolpath`: RISC-V toolchain directory, passed to `make` as the environment variable `RISCV`.
 
-The ELF is loaded by OpenOCD, so OpenOCD must be able to read `assembly_environment`.
+For hardware, OpenOCD must be able to read the ELF in `assembly_environment`.
+For simulation, the ELF path is passed to the configured simulator.
 
 ## Start OpenOCD
 
@@ -128,10 +122,10 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 
 `cli.rs` (arguments/config), `logging.rs`, `feedback.rs` (numeric feedback), `harness.rs` (per-input build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `snippet.rs` (decode and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `main.rs` (wiring).
 
-## Simulation backend (not yet selectable)
+## Simulation backend
 
-`simulation.rs` implements the Unix simulation backend; CLI/TOML selection is
-the next integration step. It accepts paths to the built simulator and
+Select `--backend simulation` or `backend = "simulation"` in TOML; the default
+is hardware. See `fuzzer.simulation.example.toml`. The backend accepts paths to the built simulator and
 `vcdtogglerate`, a simulator working directory, ordered simulator arguments, a
 target scope, an optional exclusion file, and separate process timeouts.
 Relative configured paths resolve from the fuzzer's starting directory, not the
@@ -141,12 +135,20 @@ placeholders are required. The user must supply the Chipyard-specific flags,
 including the fixed-stop flag, and ensure the simulator exits successfully and
 flushes the specified VCD. No simulator flags are assumed.
 
+The TOML `simulator_arg` is an ordered array. On the command line, repeat
+`--simulator-arg=VALUE` for each argument; if any are supplied they replace
+the entire TOML array. All other CLI values also override TOML. Both simulator
+and analyzer timeouts must be positive, and `exec_timeout_ms` must exceed their
+sum; allow additional time for building the ELF.
+
 The backend runs `vcdtogglerate <VCD> --target-scope <scope>`, optionally with
 `--exclude-signal-file <path>`. It maximizes the reported `toggle_coverage`
 fraction and records `toggle_activity` in signal-level changes per simulated
 second. The analyzer uses the last change of a counted signal as its time
 denominator; it may report zero for an empty selection or missing timing.
 Keep the scope, exclusions and simulation window consistent between runs.
+Use separate solutions directories for hardware, simulation and changed
+simulation configurations, since their scores are not comparable.
 
 Each evaluation uses a separate supervisor that owns the temporary VCD directory
 and monitors a parent-liveness pipe. On a subprocess timeout, or if the fuzzer

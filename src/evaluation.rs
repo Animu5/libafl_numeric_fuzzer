@@ -9,6 +9,7 @@ pub trait EvaluationBackend {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Metric {
     /// Running-minus-idle power, in watts.
+    #[cfg_attr(not(feature = "hardware"), allow(dead_code))]
     PowerDelta,
     /// Fraction of selected bit-vector bits that changed at least once.
     ToggleCoverage,
@@ -23,6 +24,7 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
+    #[cfg_attr(not(feature = "hardware"), allow(dead_code))]
     pub fn power_delta(watts: f64) -> Result<Self, EvaluationError> {
         if !watts.is_finite() {
             return Err(EvaluationError::Measurement(format!(
