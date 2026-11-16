@@ -38,3 +38,9 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 ## Current Limitations
 
 The full setup has not yet been tested end to end on the final hardware, and the OpenOCD interface and target configuration still need to be confirmed. See `TODO.md`.
+
+The evaluation backend interface is defined for future hardware and simulation
+backends; the current executable still uses the hardware path described above.
+The planned simulation score is toggle coverage, a fraction rather than watts.
+`vcdtogglerate` may report zero when no counted bits or usable change time exist,
+so zero alone does not establish that the intended signals were measured.

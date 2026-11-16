@@ -1,4 +1,9 @@
 mod cli;
+#[allow(
+    dead_code,
+    reason = "The backend contract will be wired up during backend extraction"
+)]
+mod evaluation;
 mod feedback;
 mod harness;
 mod logging;
