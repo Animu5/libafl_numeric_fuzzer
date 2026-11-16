@@ -27,20 +27,26 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 
 * `src/main.rs`: wiring of config, OpenOCD, scope and LibAFL;
 * `src/cli.rs`: arguments and TOML config;
-* `src/harness.rs`: per-input build, load and idle/run measurement;
+* `src/harness.rs`: per-input build and evaluation dispatch;
+* `src/evaluation.rs`, `src/hardware.rs`: backend contract and hardware execution;
 * `src/snippet.rs`: `atndecode` and `make` steps;
 * `src/feedback.rs`: numeric feedback;
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
 * `src/openocd.rs`: OpenOCD Tcl client;
 * `src/logging.rs`: file logging;
-* `fuzzer.example.toml`, `RUNNING.md` (setup and execution), `TODO.md` (remaining work).
+* `fuzzer.example.toml`, `RUNNING.md` (setup and execution), `TODO.md` (remaining work), `CHANGELOG.md` (notable changes).
 
 ## Current Limitations
 
 The full setup has not yet been tested end to end on the final hardware, and the OpenOCD interface and target configuration still need to be confirmed. See `TODO.md`.
 
-The evaluation backend interface is defined for future hardware and simulation
-backends; the current executable still uses the hardware path described above.
+The hardware path uses an evaluation backend interface; a simulation backend is
+not yet implemented.
 The planned simulation score is toggle coverage, a fraction rather than watts.
 `vcdtogglerate` may report zero when no counted bits or usable change time exist,
 so zero alone does not establish that the intended signals were measured.
+
+## Attribution
+
+GitHub Copilot assisted with the evaluation backend contract and hardware
+backend refactoring in this repository.
