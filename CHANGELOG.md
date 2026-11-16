@@ -14,13 +14,16 @@ Notable changes are summarized here. Earlier history is available in Git.
 - Allow simulation-only builds without NI-VISA via `--no-default-features`.
 - Supervise simulation subprocesses and temporary traces so they are cleaned up
   if the fuzzer exits during simulation or analysis.
+- Support independent parallel simulation workers with per-worker build,
+  simulator working, corpus, log, and snippet archive locations.
 
 ### Changed
 
 - Move the OpenOCD and oscilloscope workflow behind a hardware evaluation
   backend while retaining the existing hardware measurement sequence.
 - Generalize numeric feedback to distinguish power delta from toggle coverage.
-  The simulation backend is not implemented yet.
+- Analyze Chipyard cycle-limit termination by default, while rejecting other
+  simulator errors and disabling simulator core dumps.
 
 ## 0.9.0
 

@@ -89,6 +89,54 @@ fn supervisor_returns_metrics_on_success() {
 }
 
 #[test]
+fn supervisor_analyzes_real_chipyard_cycle_limit_when_configured() {
+    let Some(simulator) = std::env::var_os("CHIPYARD_TEST_SIMULATOR") else {
+        return;
+    };
+    let elf = std::env::var_os("CHIPYARD_TEST_ELF").expect("CHIPYARD_TEST_ELF must be set");
+    let analyzer = std::env::var_os("VCDTOGGLERATE_TEST_BINARY")
+        .expect("VCDTOGGLERATE_TEST_BINARY must be set");
+    let ini =
+        std::env::var("CHIPYARD_TEST_DRAMSIM_INI").expect("CHIPYARD_TEST_DRAMSIM_INI must be set");
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
+        .arg("--internal-simulation-supervisor")
+        .arg(elf)
+        .arg(simulator)
+        .arg(dir.path())
+        .arg(analyzer)
+        .arg("TOP")
+        .arg("")
+        .args(["60", "0", "60", "0"])
+        .args([
+            "+permissive",
+            "+dramsim",
+            &format!("+dramsim_ini_dir={ini}"),
+            "+max-cycles=1000",
+            "+loadmem={elf}",
+            "+vcdfile={vcd}",
+            "+permissive-off",
+            "{elf}",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _liveness = child.stdin.take().unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "supervisor failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stdout = String::from_utf8(result.stdout).unwrap();
+    assert!(stdout.contains("toggle_activity="), "{stdout}");
+    assert!(stdout.contains("toggle_coverage="), "{stdout}");
+    assert!(!dir.path().join("core").exists());
+}
+
+#[test]
 fn supervisor_cleans_up_after_parent_is_killed() {
     for analyzer_phase in [false, true] {
         let dir = tempfile::tempdir().unwrap();
