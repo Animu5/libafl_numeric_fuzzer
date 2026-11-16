@@ -12,3 +12,5 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 visa-rs = "0.7.1"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
+libc = "0.2"
+tempfile = "3"
