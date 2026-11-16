@@ -11,6 +11,7 @@ pub enum Metric {
     /// Running-minus-idle power, in watts.
     PowerDelta,
     /// Fraction of selected bit-vector bits that changed at least once.
+    #[allow(dead_code, reason = "Used by the forthcoming simulation backend")]
     ToggleCoverage,
 }
 
@@ -36,6 +37,7 @@ impl Evaluation {
         })
     }
 
+    #[allow(dead_code, reason = "Used by the forthcoming simulation backend")]
     pub fn toggle_coverage(coverage: f64, activity: f64) -> Result<Self, EvaluationError> {
         if !coverage.is_finite() || !(0.0..=1.0).contains(&coverage) {
             return Err(EvaluationError::Measurement(format!(
@@ -95,6 +97,7 @@ impl Error for EvaluationError {}
 ///
 /// The analyzer also reports zero for an empty selection or missing timing; its
 /// output does not distinguish those cases from a genuine zero measurement.
+#[allow(dead_code, reason = "Used by the forthcoming simulation backend")]
 pub fn parse_toggle_metrics(stdout: &str) -> Result<Evaluation, EvaluationError> {
     let mut coverage = None;
     let mut activity = None;

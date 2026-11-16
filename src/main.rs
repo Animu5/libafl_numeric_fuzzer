@@ -1,10 +1,7 @@
 mod cli;
-#[allow(
-    dead_code,
-    reason = "The backend contract will be wired up during backend extraction"
-)]
 mod evaluation;
 mod feedback;
+mod hardware;
 mod harness;
 mod logging;
 mod measurement;
@@ -15,6 +12,7 @@ mod snippet;
 use clap::Parser;
 use cli::Args;
 use feedback::{NumericFeedback, Shared};
+use hardware::HardwareBackend;
 use harness::Harness;
 use libafl::mutators::{havoc_mutations, HavocScheduledMutator};
 use libafl::{
@@ -132,13 +130,13 @@ fn main() -> Result<(), Error> {
     }
 
     let mut harness = Harness {
-        openocd,
         builder,
-        measurement,
+        backend: Box::new(HardwareBackend::new(
+            openocd,
+            measurement,
+            Duration::from_millis(config.settle_ms),
+        )),
         shared: shared.clone(),
-        settle: Duration::from_millis(config.settle_ms),
-        failures: 0,
-        target_failures: 0,
     };
 
     let corpus = OnDiskCorpus::<BytesInput>::new(&config.solutions_path)?;
