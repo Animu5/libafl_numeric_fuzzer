@@ -96,7 +96,11 @@ Inputs with a new best F1 delta are logged as `New best measurement delta: <valu
 
 ## Logging
 
-Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on every start. Filter per module with `RUST_LOG`, e.g. `RUST_LOG=warn,libafl_fuzzer::openocd=debug`.
+Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on every start. Set the filter with `--log-level` (TOML `log_level`), e.g. `--log-level debug` or `--log-level info,libafl=debug`; if unset, `RUST_LOG` is honored, otherwise the level is `info`. LibAFL logs through the `log` crate, and those records are bridged into the same file, so `libafl`/`libafl_bolts` targets can be filtered the same way. With `--log-level debug` the log shows every snippet build, every simulation and analyzer invocation (with expanded arguments and exit statuses), and each skipped input with its size and a hex preview.
+
+## Progress display
+
+`--monitor` (TOML `monitor`) selects how fuzzing progress is shown: `tui` (default; full-screen terminal UI), `print` (plain progress lines on stdout), `log` (a stats line in the log file every 60 s — use this for headless runs), or `none`. The parallel launcher discards worker stdout, so for worker runs use `log` to get per-worker progress in `<log_file>.worker-NNNN`.
 
 ## Saving snippets
 
@@ -217,7 +221,7 @@ printed on the launcher terminal. The exchange directory must not already exist:
 use a fresh solutions path for each run, especially if simulation settings change.
 Input sharing is filesystem-based and is not instantaneous; each imported input
 is re-simulated by each receiving worker. Snippet archives use the same subdirectories,
-and logs are named `<log_file>.worker-0000`, etc. Worker TUI output is suppressed.
+and logs are named `<log_file>.worker-0000`, etc. Worker stdout is discarded, so use `--monitor log` for per-worker progress lines in those log files.
 If a worker exits, the launcher stops the others and reports an error. When the
 launcher exits, workers and their active build processes are terminated; active
 simulation supervisors then clean up their own VCDs.

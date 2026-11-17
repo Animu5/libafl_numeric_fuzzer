@@ -18,6 +18,11 @@ Notable changes are summarized here. Earlier history is available in Git.
   simulator working, corpus, log, and snippet archive locations.
 - Create isolated worker build environments from a template and exchange inputs
   between workers, reporting the global best coverage and its input and assembly.
+- Set the log filter with `--log-level`/`log_level` (overrides `RUST_LOG`); LibAFL's
+  `log` records are bridged into the log file so its targets can be filtered too.
+- Select the progress monitor with `--monitor`/`monitor`: `tui` (default), `print`
+  (stdout lines), `log` (periodic stats lines in the log file, for headless runs),
+  or `none`.
 
 ### Changed
 
