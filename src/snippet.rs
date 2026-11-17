@@ -1,11 +1,24 @@
 use std::{
     fmt, io,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::Instant,
 };
+
+/// Absolutizes `path` against the current directory. Toolchain temp files honor TMPDIR
+/// only when it is absolute; a relative TMPDIR is unresolvable from the child's working
+/// directory and the toolchain silently falls back to /tmp.
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
 
 #[derive(Debug)]
 pub enum BuildError {
@@ -82,7 +95,9 @@ impl SnippetBuilder {
         riscv_toolpath: PathBuf,
     ) -> Self {
         Self {
-            assembly_environment,
+            // Absolutized so TMPDIR (set to this directory for child processes) is
+            // absolute and the toolchain does not fall back to /tmp.
+            assembly_environment: absolute(&assembly_environment),
             atndecode_path,
             riscv_toolpath,
             archive_dir: None,
@@ -342,6 +357,15 @@ mod tests {
         let elf = b.build(b"x").unwrap();
         assert_eq!(std::fs::read_to_string(elf).unwrap().trim(), "/opt/riscv");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn relative_assembly_environment_is_absolutized() {
+        // TMPDIR is only honored when absolute; a relative one makes the toolchain
+        // fall back to /tmp from the child's working directory.
+        let b = SnippetBuilder::new("rel_build".into(), "/bin/cat".into(), "/opt/riscv".into());
+        assert!(b.assembly_environment.is_absolute());
+        assert!(b.assembly_environment.ends_with("rel_build"));
     }
 
     #[test]
