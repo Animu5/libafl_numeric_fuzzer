@@ -128,11 +128,11 @@ pub struct Args {
     #[arg(long)]
     exclude_signal_file: Option<PathBuf>,
 
-    /// Simulator timeout in milliseconds (default: 60000)
+    /// Simulator timeout in milliseconds (default: 600000)
     #[arg(long)]
     simulator_timeout_ms: Option<u64>,
 
-    /// Analyzer timeout in milliseconds (default: 30000)
+    /// Analyzer timeout in milliseconds (default: 120000)
     #[arg(long)]
     analyzer_timeout_ms: Option<u64>,
 
@@ -152,7 +152,7 @@ pub struct Args {
     #[arg(long)]
     scope_acquire_timeout_ms: Option<u64>,
 
-    /// LibAFL timeout for one complete run (build, load, both measurements) in milliseconds (default: 120000)
+    /// LibAFL timeout for one complete run (build, simulate, analyze, or load and measure) in milliseconds (default: 900000)
     #[arg(long)]
     exec_timeout_ms: Option<u64>,
 
@@ -251,7 +251,7 @@ impl Args {
         let exec_timeout_ms = self
             .exec_timeout_ms
             .or(file.exec_timeout_ms)
-            .unwrap_or(120_000);
+            .unwrap_or(900_000);
         let backend = match self.backend.or(file.backend).unwrap_or_default() {
             BackendKind::Hardware => {
                 if !cfg!(feature = "hardware") {
@@ -286,11 +286,11 @@ impl Args {
                 let simulator_timeout_ms = self
                     .simulator_timeout_ms
                     .or(file.simulator_timeout_ms)
-                    .unwrap_or(60_000);
+                    .unwrap_or(600_000);
                 let analyzer_timeout_ms = self
                     .analyzer_timeout_ms
                     .or(file.analyzer_timeout_ms)
-                    .unwrap_or(30_000);
+                    .unwrap_or(120_000);
                 if simulator_timeout_ms == 0 || analyzer_timeout_ms == 0 {
                     return Err("Simulator and analyzer timeouts must be nonzero".into());
                 }
@@ -545,7 +545,7 @@ mod tests {
             }
             _ => panic!("expected hardware"),
         }
-        assert_eq!(config.exec_timeout_ms, 120_000);
+        assert_eq!(config.exec_timeout_ms, 900_000);
     }
 
     #[test]
