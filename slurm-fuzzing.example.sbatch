@@ -26,8 +26,11 @@ libafl_fuzzer --config /path/to/fuzzer.simulation.toml \
   --worker-index "${SLURM_ARRAY_TASK_ID}" \
   --solutions-path "${SOLUTIONS}" \
   --log-file "${SCRATCH}/fuzzer.log" \
-  --log-level info \
   --monitor log
 
-# Per-task logs: ${SCRATCH}/fuzzer.log.worker-0000 ...
+# The log level is deliberately not set here: use log_level in the TOML or
+# RUST_LOG in the environment (RUST_LOG=debug sbatch ...), which this script
+# does not override.
+# Per-task logs, including the --monitor log progress lines (every 60 s):
+#   tail -f ${SCRATCH}/fuzzer.log.worker-*
 # Shared global best: ${SOLUTIONS}/parallel-exchange/global-best.txt
