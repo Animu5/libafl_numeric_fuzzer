@@ -160,7 +160,11 @@ impl SimulationBackend {
             vcd.display()
         );
         let mut simulator = Command::new(&self.config.simulator);
-        simulator.current_dir(&self.config.working_dir).args(&args);
+        simulator
+            .current_dir(&self.config.working_dir)
+            // Keep subprocess temp files off the size-limited /tmp.
+            .env("TMPDIR", &self.config.working_dir)
+            .args(&args);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -212,6 +216,7 @@ impl SimulationBackend {
         let mut analyzer = Command::new(&self.config.analyzer);
         analyzer
             .current_dir(&self.config.working_dir)
+            .env("TMPDIR", &self.config.working_dir)
             .arg(vcd)
             .arg("--target-scope")
             .arg(&self.config.target_scope);
@@ -742,6 +747,7 @@ mod tests {
 test -f "$1" || exit 3
 printf '%s' "$2" > vcd-path
 printf 'waveform' > "$2"
+printf '%s' "${TMPDIR:-}" > tmpdir
 "#,
             );
             Self::script(
@@ -769,6 +775,9 @@ printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
         let second = fs::read_to_string(fixture.dir.path().join("vcd-path")).unwrap();
         assert_ne!(first, second);
         assert!(!Path::new(&second).exists());
+        // The simulator runs with TMPDIR inside the working directory, not /tmp.
+        let tmpdir = fs::read_to_string(fixture.dir.path().join("tmpdir")).unwrap();
+        assert_eq!(tmpdir, fixture.dir.path().to_str().unwrap());
     }
 
     #[test]

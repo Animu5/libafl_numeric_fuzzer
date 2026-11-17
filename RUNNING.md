@@ -90,7 +90,7 @@ See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
 ## Fuzzing Behaviour
 
-The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
+The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. The decoder and `make` run with `TMPDIR` set to the assembly environment, so the toolchain never writes intermediate files to `/tmp`. Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
 Inputs with a new best F1 delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name. Each saved input is also stored as assembly, next to the binary input as `<name>.S` (ready to assemble: it includes `init.inc`). The assembly of the current best input is kept in `best.S`, so on an interrupt (Ctrl-C) the best snippet so far is always on disk.
 
@@ -174,7 +174,9 @@ specific simulator and workload before comparing scores.
 Each evaluation creates a fresh `numeric-fuzzer-vcd-*` trace directory under `vcd_dir`
 (`--vcd-dir`, TOML `vcd_dir`) if configured, otherwise inside the simulator working
 directory — never the system temp directory, which is often too small for
-multi-gigabyte VCDs. It is removed after analysis. Each evaluation uses a separate
+multi-gigabyte VCDs. It is removed after analysis. The simulator and analyzer
+subprocesses likewise run with `TMPDIR` set to the simulator working directory.
+Each evaluation uses a separate
 supervisor that owns the temporary VCD directory and monitors a parent-liveness pipe. On a subprocess timeout, or if the fuzzer
 exits during simulation or analysis, it terminates the active process group,
 reaps the direct child and removes the temporary directory. The supervisor is
