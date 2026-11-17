@@ -10,6 +10,8 @@ scope_timeout_ms = 20000
 # Optional (defaults shown)
 # backend = "hardware"
 # log_file = "fuzzer.log"
+# log_level = "info"  # overrides RUST_LOG; e.g. "debug" or "info,libafl=debug"
+# monitor = "tui"  # progress display: "tui", "print" (stdout), "log" (lines in the log file), "none"
 # openocd_addr = "127.0.0.1:6666"
 # scope_acquire_timeout_ms = 30000
 # exec_timeout_ms = 120000

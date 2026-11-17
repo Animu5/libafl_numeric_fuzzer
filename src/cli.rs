@@ -10,6 +10,21 @@ enum BackendKind {
     Simulation,
 }
 
+/// How fuzzing progress is displayed.
+#[derive(Clone, Copy, Debug, Default, Deserialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MonitorKind {
+    /// Full-screen terminal UI (default)
+    #[default]
+    Tui,
+    /// Plain progress lines on stdout
+    Print,
+    /// Periodic progress lines in the log file (for headless runs)
+    Log,
+    /// No progress output
+    None,
+}
+
 /// Command-line arguments. Every setting can also be given in the TOML file passed
 /// with `--config` (same names with underscores, e.g. `openocd_addr = "..."`).
 /// Command-line values take precedence over the file.
@@ -56,6 +71,14 @@ pub struct Args {
     /// Log file (default: fuzzer.log)
     #[arg(long)]
     log_file: Option<PathBuf>,
+
+    /// Log filter for the log file, e.g. "debug" or "info,libafl=debug" (default: RUST_LOG if set, else "info")
+    #[arg(long)]
+    log_level: Option<String>,
+
+    /// Progress monitor: tui (default), print (stdout lines), log (periodic lines in the log file), none
+    #[arg(long, value_enum)]
+    monitor: Option<MonitorKind>,
 
     /// Number of independent simulation workers (default: 1)
     #[arg(long)]
@@ -148,6 +171,8 @@ pub struct Config {
     pub snippet_dir: Option<PathBuf>,
     pub seed: Option<PathBuf>,
     pub log_file: PathBuf,
+    pub log_level: Option<String>,
+    pub monitor: MonitorKind,
     pub backend: BackendConfig,
     pub exec_timeout_ms: u64,
     pub worker_dirs: Option<Vec<WorkerDirs>>,
@@ -409,6 +434,8 @@ impl Args {
                 .log_file
                 .or(file.log_file)
                 .unwrap_or_else(|| "fuzzer.log".into()),
+            log_level: self.log_level.or(file.log_level),
+            monitor: self.monitor.or(file.monitor).unwrap_or_default(),
             backend,
             exec_timeout_ms,
             worker_dirs,
@@ -637,5 +664,39 @@ mod tests {
             .merge(Args::default())
             .unwrap_err()
             .contains("hardware feature"));
+    }
+
+    #[test]
+    fn log_level_and_monitor_come_from_file_and_cli_overrides() {
+        let file: Args = toml::from_str(
+            r#"
+            log_level = "debug"
+            monitor = "log"
+        "#,
+        )
+        .unwrap();
+        let config = simulation().merge(file).unwrap();
+        assert_eq!(config.log_level.as_deref(), Some("debug"));
+        assert_eq!(config.monitor, MonitorKind::Log);
+
+        let cli = Args {
+            log_level: Some("warn".into()),
+            monitor: Some(MonitorKind::None),
+            ..simulation()
+        };
+        let file: Args = toml::from_str(
+            r#"
+            log_level = "debug"
+            monitor = "log"
+        "#,
+        )
+        .unwrap();
+        let config = cli.merge(file).unwrap();
+        assert_eq!(config.log_level.as_deref(), Some("warn"));
+        assert_eq!(config.monitor, MonitorKind::None);
+
+        let config = simulation().merge(Args::default()).unwrap();
+        assert_eq!(config.log_level, None);
+        assert_eq!(config.monitor, MonitorKind::Tui);
     }
 }

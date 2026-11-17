@@ -9,6 +9,7 @@ mod harness;
 mod logging;
 #[cfg(feature = "hardware")]
 mod measurement;
+mod monitor;
 #[cfg(feature = "hardware")]
 mod openocd;
 #[cfg(unix)]
@@ -20,7 +21,7 @@ mod simulation;
 mod snippet;
 
 use clap::Parser;
-use cli::{Args, BackendConfig};
+use cli::{Args, BackendConfig, MonitorKind};
 use evaluation::EvaluationBackend;
 use feedback::{NumericFeedback, Shared};
 #[cfg(feature = "hardware")]
@@ -33,12 +34,13 @@ use libafl::{
     executors::InProcessExecutor,
     fuzzer::{Evaluator, Fuzzer, StdFuzzer},
     inputs::BytesInput,
-    monitors::TuiMonitor,
+    monitors::{NopMonitor, SimplePrintingMonitor, TuiMonitor},
     schedulers::QueueScheduler,
     stages::mutational::StdMutationalStage,
     state::StdState,
     Error,
 };
+use monitor::{DynMonitor, LoggingMonitor};
 use libafl_bolts::{current_nanos, rands::StdRand, tuples::tuple_list};
 #[cfg(feature = "hardware")]
 use measurement::{Measurement, ScopeMeasurement};
@@ -132,7 +134,8 @@ fn main() -> Result<(), Error> {
         #[cfg(not(unix))]
         return Err(Error::illegal_argument("Parallel workers require Unix"));
     }
-    logging::init(&config.log_file).map_err(context("Could not open log file"))?;
+    logging::init(&config.log_file, config.log_level.as_deref())
+        .map_err(context("Could not initialize logging"))?;
 
     if config.solutions_path.exists() && !config.solutions_path.is_dir() {
         return Err(Error::illegal_argument(
@@ -268,11 +271,18 @@ fn main() -> Result<(), Error> {
 
     let mut fuzzer = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
 
-    let monitor = TuiMonitor::builder()
-        .title("Numeric Fuzzer")
-        .version(env!("CARGO_PKG_VERSION"))
-        .build();
-    let mut manager = SimpleEventManager::new(monitor);
+    let monitor: Box<dyn libafl::monitors::Monitor> = match config.monitor {
+        MonitorKind::Tui => Box::new(
+            TuiMonitor::builder()
+                .title("Numeric Fuzzer")
+                .version(env!("CARGO_PKG_VERSION"))
+                .build(),
+        ),
+        MonitorKind::Print => Box::new(SimplePrintingMonitor {}),
+        MonitorKind::Log => Box::new(LoggingMonitor::new(Duration::from_secs(60))),
+        MonitorKind::None => Box::new(NopMonitor {}),
+    };
+    let mut manager = SimpleEventManager::new(DynMonitor(monitor));
 
     let mut target = |input: &BytesInput| harness.run(input);
     let mut executor = InProcessExecutor::builder()
