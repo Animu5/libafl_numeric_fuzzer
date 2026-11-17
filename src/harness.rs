@@ -21,6 +21,8 @@ impl Harness {
     pub fn run(&mut self, input: &BytesInput) -> ExitKind {
         self.shared.evaluation.set(None);
         *self.shared.assembly.borrow_mut() = None;
+        #[cfg(unix)]
+        self.shared.input.borrow_mut().clear();
 
         let bytes = input.target_bytes();
         let elf = match self.builder.build(bytes.to_slice()) {
@@ -46,6 +48,11 @@ impl Harness {
                 }
                 *self.shared.assembly.borrow_mut() =
                     self.builder.last_assembly().map(str::to_string);
+                #[cfg(unix)]
+                self.shared
+                    .input
+                    .borrow_mut()
+                    .extend_from_slice(bytes.to_slice());
                 self.shared.evaluation.set(Some(result));
             }
             Err(EvaluationError::Candidate(message)) => {

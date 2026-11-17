@@ -7,11 +7,12 @@ solutions_path = "./simulation-solutions"
 
 simulator_path = "/path/to/chipyard/verilator-simulator"
 simulator_working_dir = "/path/to/chipyard/simulator/working-directory"
-# Replace the cycle limit and, if needed, add DRAMSim arguments.
+# 10,000,000 cycles is a placeholder, not a verified one-millisecond limit.
+# Add DRAMSim arguments if needed.
 # {elf} is passed both to LOADMEM and as the positional binary.
 simulator_arg = [
     "+permissive",
-    "+max-cycles=<SET-CYCLE-LIMIT>",
+    "+max-cycles=10000000",
     "+loadmem={elf}",
     "+vcdfile={vcd}",
     "+permissive-off",
@@ -25,7 +26,10 @@ analyzer_timeout_ms = 30000
 # Must exceed both timeouts combined, plus time to build each ELF.
 exec_timeout_ms = 120000
 
-# Optional independent parallel workers (create isolated copies yourself).
+# Optional parallel workers. The parent of the fresh workspace must exist.
+# The workspace itself and solutions_path/parallel-exchange must not exist.
 # workers = 2
+# worker_workspace = "/path/to/new-worker-workspace"
+# Alternatively, provide pre-existing isolated directories explicitly:
 # worker_assembly_environment = ["/path/to/build-worker-0", "/path/to/build-worker-1"]
 # worker_simulator_working_dir = ["/path/to/sim-worker-0", "/path/to/sim-worker-1"]

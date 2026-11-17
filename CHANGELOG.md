@@ -16,6 +16,8 @@ Notable changes are summarized here. Earlier history is available in Git.
   if the fuzzer exits during simulation or analysis.
 - Support independent parallel simulation workers with per-worker build,
   simulator working, corpus, log, and snippet archive locations.
+- Create isolated worker build environments from a template and exchange inputs
+  between workers, reporting the global best coverage and its input and assembly.
 
 ### Changed
 
