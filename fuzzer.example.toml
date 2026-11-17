@@ -17,3 +17,19 @@ scope_timeout_ms = 20000
 # exec_timeout_ms = 900000
 # snippet_dir = "./snippets"  # keep every decoded snippet as NNNNNN.S (debugging)
 # settle_ms = 100
+
+# Simulation backend only (see fuzzer.simulation.example.toml for these):
+# simulator_path = "/path/to/chipyard/verilator-simulator"
+# simulator_working_dir = "/path/to/chipyard/simulator/working-directory"
+# simulator_arg = ["+max-cycles=10000000", "+loadmem={elf}", "+vcdfile={vcd}", "{elf}"]
+# analyzer_path = "/path/to/vcdtogglerate"
+# target_scope = "TOP.path.to.target"
+# exclude_signal_file = "/path/to/excluded-signals.txt"
+# simulator_timeout_ms = 600000
+# analyzer_timeout_ms = 120000
+
+# Parallel workers (require backend = "simulation" and workers >= 2):
+# workers = 2
+# worker_workspace = "/path/to/new-worker-workspace"
+# worker_assembly_environment = ["/path/to/build-worker-0", "/path/to/build-worker-1"]
+# worker_simulator_working_dir = ["/path/to/sim-worker-0", "/path/to/sim-worker-1"]

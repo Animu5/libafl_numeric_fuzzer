@@ -1,10 +1,14 @@
 # Example only: replace paths and supply Chipyard-specific flags before running.
+# Use with: libafl_fuzzer --config fuzzer.simulation.example.toml (CLI flags override these values)
 backend = "simulation"
 assembly_environment = "/path/to/snippet_build"
 atndecode_path = "/path/to/atnwalk/build/riscv64g/bin/decode"
 riscv_toolpath = "/path/to/riscv"
 solutions_path = "./simulation-solutions"
+# seed = "/path/to/seeds"  # file or directory of seed files (default: 16 zero bytes)
 
+# log_file = "fuzzer.log"
+# snippet_dir = "./snippets"  # keep every decoded snippet as NNNNNN.S (debugging)
 # Log filter for the log file (default: RUST_LOG if set, else "info"); "debug" shows
 # every snippet build, simulation and analyzer run, and each skipped input.
 # log_level = "info"
@@ -40,3 +44,10 @@ exec_timeout_ms = 900000
 # Alternatively, provide pre-existing isolated directories explicitly:
 # worker_assembly_environment = ["/path/to/build-worker-0", "/path/to/build-worker-1"]
 # worker_simulator_working_dir = ["/path/to/sim-worker-0", "/path/to/sim-worker-1"]
+
+# Hardware backend only (see fuzzer.example.toml); ignored with backend = "simulation":
+# openocd_addr = "127.0.0.1:6666"
+# scope_resource = "USB0::0x05ff::0x1023::SERIAL::INSTR"  # see --list-scopes
+# scope_timeout_ms = 5000
+# scope_acquire_timeout_ms = 30000
+# settle_ms = 100
