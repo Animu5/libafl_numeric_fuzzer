@@ -303,6 +303,12 @@ fn main() -> Result<(), Error> {
                 .map_err(context("Input exchange failed"))?
             {
                 shared.importing.set(true);
+                let raw: &[u8] = input.as_ref();
+                tracing::debug!(
+                    "Evaluating imported exchange input of {} bytes (head {:02x?})",
+                    raw.len(),
+                    &raw[..raw.len().min(16)]
+                );
                 let result = fuzzer.evaluate_input(&mut state, &mut executor, &mut manager, &input);
                 shared.importing.set(false);
                 result?;

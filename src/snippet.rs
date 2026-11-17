@@ -11,7 +11,29 @@ use std::{
 pub enum BuildError {
     Decode(String),
     Make(String),
-    Io(io::Error),
+    Io {
+        /// The operation and paths that failed, e.g. `spawning decoder '/x' in '/y'`.
+        context: String,
+        source: Option<io::Error>,
+    },
+}
+
+impl BuildError {
+    /// An I/O failure, annotated with the operation and paths that caused it.
+    fn io(context: impl Into<String>, source: io::Error) -> Self {
+        Self::Io {
+            context: context.into(),
+            source: Some(source),
+        }
+    }
+
+    /// A precondition failure (e.g. a missing directory) without an OS error.
+    fn missing(context: impl Into<String>) -> Self {
+        Self::Io {
+            context: context.into(),
+            source: None,
+        }
+    }
 }
 
 impl fmt::Display for BuildError {
@@ -19,16 +41,23 @@ impl fmt::Display for BuildError {
         match self {
             BuildError::Decode(m) => write!(f, "decode failed: {m}"),
             BuildError::Make(m) => write!(f, "make failed: {m}"),
-            BuildError::Io(e) => write!(f, "I/O error: {e}"),
+            BuildError::Io { context, source } => match source {
+                Some(source) => write!(f, "I/O error while {context}: {source}"),
+                None => write!(f, "I/O error: {context}"),
+            },
         }
     }
 }
 
-impl std::error::Error for BuildError {}
-
-impl From<io::Error> for BuildError {
-    fn from(e: io::Error) -> Self {
-        BuildError::Io(e)
+impl std::error::Error for BuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BuildError::Io {
+                source: Some(source),
+                ..
+            } => Some(source),
+            _ => None,
+        }
     }
 }
 
@@ -74,11 +103,54 @@ impl SnippetBuilder {
         Ok(self)
     }
 
+    /// The configured paths, for log messages when a build fails.
+    pub fn paths_summary(&self) -> String {
+        format!(
+            "assembly_environment={}, atndecode={}, riscv_toolpath={}, snippet_archive={}",
+            self.assembly_environment.display(),
+            self.atndecode_path.display(),
+            self.riscv_toolpath.display(),
+            self.archive_dir
+                .as_ref()
+                .map_or_else(|| "off".to_string(), |dir| dir.display().to_string()),
+        )
+    }
+
     /// Decodes `bitstream`, builds the snippet, and returns the path to the fresh ELF.
     pub fn build(&mut self, bitstream: &[u8]) -> Result<PathBuf, BuildError> {
         let elf = self.assembly_environment.join("snippet.elf");
+        let src_dir = self.assembly_environment.join("src");
 
-        tracing::debug!("Building snippet from {} input bytes", bitstream.len());
+        tracing::debug!(
+            "Building snippet from {} input bytes; env={} (dir: {}), src={} (dir: {}), decoder={} (file: {}), RISCV={}, archive={:?}",
+            bitstream.len(),
+            self.assembly_environment.display(),
+            self.assembly_environment.is_dir(),
+            src_dir.display(),
+            src_dir.is_dir(),
+            self.atndecode_path.display(),
+            self.atndecode_path.is_file(),
+            self.riscv_toolpath.display(),
+            self.archive_dir,
+        );
+        if !self.assembly_environment.is_dir() {
+            return Err(BuildError::missing(format!(
+                "assembly environment {} is not a directory",
+                self.assembly_environment.display()
+            )));
+        }
+        if !src_dir.is_dir() {
+            return Err(BuildError::missing(format!(
+                "assembly environment {} has no src/ directory",
+                self.assembly_environment.display()
+            )));
+        }
+        if !self.atndecode_path.is_file() {
+            return Err(BuildError::missing(format!(
+                "decoder {} is not a file",
+                self.atndecode_path.display()
+            )));
+        }
         let start = Instant::now();
         self.decode(bitstream)?;
         let decoded = start.elapsed();
@@ -102,22 +174,52 @@ impl SnippetBuilder {
     /// Pipes the bitstream into `atndecode` and writes its stdout to `src/snippet.S`,
     /// preceded by `#include "init.inc"`.
     fn decode(&mut self, bitstream: &[u8]) -> Result<(), BuildError> {
+        tracing::debug!(
+            "Running decoder {:?} in {:?} with {} bytes on stdin",
+            self.atndecode_path,
+            self.assembly_environment,
+            bitstream.len()
+        );
         let mut child = Command::new(&self.atndecode_path)
             .current_dir(&self.assembly_environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .map_err(|e| {
+                BuildError::io(
+                    format!(
+                        "spawning decoder {} in {}",
+                        self.atndecode_path.display(),
+                        self.assembly_environment.display()
+                    ),
+                    e,
+                )
+            })?;
 
         // Write from a thread so a full stdout pipe cannot deadlock us; dropping stdin sends EOF.
         let mut stdin = child.stdin.take().expect("stdin is piped");
         let data = bitstream.to_vec();
         let writer = thread::spawn(move || stdin.write_all(&data));
 
-        let out = child.wait_with_output()?;
+        let out = child.wait_with_output().map_err(|e| {
+            BuildError::io(
+                format!("waiting for decoder {}", self.atndecode_path.display()),
+                e,
+            )
+        })?;
         // The decoder may exit without reading all input; a broken pipe is then not an error.
         match writer.join().expect("stdin writer panicked") {
-            Err(e) if e.kind() != io::ErrorKind::BrokenPipe => return Err(e.into()),
+            Err(e) if e.kind() != io::ErrorKind::BrokenPipe => {
+                return Err(BuildError::io(
+                    format!(
+                        "writing {} input bytes to decoder {}",
+                        bitstream.len(),
+                        self.atndecode_path.display()
+                    ),
+                    e,
+                ));
+            }
             _ => {}
         }
 
@@ -140,13 +242,17 @@ impl SnippetBuilder {
             String::from_utf8_lossy(&out.stdout)
         );
         let source = self.assembly_environment.join("src").join("snippet.S");
-        std::fs::write(source, &assembly)?;
+        std::fs::write(&source, &assembly).map_err(|e| {
+            BuildError::io(format!("writing assembly source {}", source.display()), e)
+        })?;
 
         self.count += 1;
         self.last_assembly = Some(assembly.clone());
         if let Some(dir) = &self.archive_dir {
             let copy = dir.join(format!("{:06}.S", self.count));
-            std::fs::write(&copy, &assembly)?;
+            std::fs::write(&copy, &assembly).map_err(|e| {
+                BuildError::io(format!("writing snippet archive {}", copy.display()), e)
+            })?;
             tracing::debug!("Saved snippet to {}", copy.display());
         }
         Ok(())
@@ -154,11 +260,26 @@ impl SnippetBuilder {
 
     /// Runs `make` in the assembly environment.
     fn make(&self) -> Result<(), BuildError> {
+        tracing::debug!(
+            "Running make -B in {:?} with RISCV={:?}",
+            self.assembly_environment,
+            self.riscv_toolpath
+        );
         let out = Command::new("make")
             .arg("-B")
             .env("RISCV", &self.riscv_toolpath)
             .current_dir(&self.assembly_environment)
-            .output()?;
+            .output()
+            .map_err(|e| {
+                BuildError::io(
+                    format!(
+                        "spawning make (resolved via PATH) in {} with RISCV={}",
+                        self.assembly_environment.display(),
+                        self.riscv_toolpath.display()
+                    ),
+                    e,
+                )
+            })?;
         tracing::debug!("make: {}", out.status);
         if !out.status.success() {
             tracing::debug!(
@@ -247,6 +368,42 @@ mod tests {
         std::fs::write(dir.join("snippet.elf"), b"old").unwrap();
         // The stale ELF is never returned because a failed make is an error.
         assert!(matches!(b.build(b"x"), Err(BuildError::Make(_))));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_build_paths_are_named_in_the_error() {
+        let dir = std::env::temp_dir().join(format!("snippet_test_{}", rand_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Makefile"), "all:\n\ttrue\n").unwrap();
+
+        // Environment exists but has no src/ directory.
+        let mut b = SnippetBuilder::new(dir.clone(), "/bin/cat".into(), "/opt/riscv".into());
+        let err = b.build(b"x").unwrap_err().to_string();
+        assert!(err.contains("no src/ directory"), "{err}");
+        assert!(err.contains(&dir.display().to_string()), "{err}");
+
+        // src/ exists but the decoder binary is missing.
+        std::fs::create_dir(dir.join("src")).unwrap();
+        let mut b =
+            SnippetBuilder::new(dir.clone(), "/nonexistent/decode".into(), "/opt/riscv".into());
+        let err = b.build(b"x").unwrap_err().to_string();
+        assert!(err.contains("decoder /nonexistent/decode is not a file"), "{err}");
+
+        // The assembly environment itself is missing.
+        let mut b = SnippetBuilder::new(dir.join("gone"), "/bin/cat".into(), "/opt/riscv".into());
+        let err = b.build(b"x").unwrap_err().to_string();
+        assert!(err.contains("is not a directory"), "{err}");
+
+        // The decoder exists but cannot be executed: the spawn error names it.
+        let decoder = dir.join("decoder");
+        std::fs::write(&decoder, b"#!/bin/sh\n").unwrap();
+        let mut b = SnippetBuilder::new(dir.clone(), decoder.clone(), "/opt/riscv".into());
+        let err = b.build(b"x").unwrap_err().to_string();
+        assert!(err.contains("spawning decoder"), "{err}");
+        assert!(err.contains(&decoder.display().to_string()), "{err}");
+        assert!(err.contains("Permission denied"), "{err}");
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

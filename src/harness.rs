@@ -25,10 +25,17 @@ impl Harness {
         self.shared.input.borrow_mut().clear();
 
         let bytes = input.target_bytes();
-        let elf = match self.builder.build(bytes.to_slice()) {
+        let raw = bytes.to_slice();
+        let head = &raw[..raw.len().min(16)];
+        let elf = match self.builder.build(raw) {
             Ok(elf) => elf,
             Err(e) => {
-                tracing::warn!("Skipping input: {e}");
+                tracing::warn!(
+                    "Skipping input of {} bytes (head {:02x?}): snippet build failed [{}]: {e}",
+                    raw.len(),
+                    head,
+                    self.builder.paths_summary()
+                );
                 return ExitKind::Ok;
             }
         };
@@ -56,7 +63,11 @@ impl Harness {
                 self.shared.evaluation.set(Some(result));
             }
             Err(EvaluationError::Candidate(message)) => {
-                tracing::warn!("Skipping input: {message}");
+                tracing::warn!(
+                    "Skipping input of {} bytes (head {:02x?}): {message}",
+                    raw.len(),
+                    head
+                );
             }
             Err(EvaluationError::Measurement(message)) => {
                 tracing::error!("Measurement failed: {message}");
