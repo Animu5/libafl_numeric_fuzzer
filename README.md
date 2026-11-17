@@ -46,7 +46,7 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
 * `src/openocd.rs`: OpenOCD Tcl client;
 * `src/logging.rs`: file logging;
-* `fuzzer.example.toml`, `fuzzer.simulation.example.toml`, `RUNNING.md` (setup and execution), `TODO.md` (remaining work), `CHANGELOG.md` (notable changes).
+* `fuzzer.example.toml`, `fuzzer.simulation.example.toml`, `slurm-fuzzing.example.sbatch`, `RUNNING.md` (setup and execution), `TODO.md` (remaining work), `CHANGELOG.md` (notable changes).
 
 ## Current Limitations
 

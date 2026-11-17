@@ -104,7 +104,9 @@ fn main() -> Result<(), Error> {
     }
     let args = Args::parse();
     #[cfg(unix)]
-    if args.internal_worker_index.is_some() {
+    if args.internal_launcher_child {
+        // Only launcher-spawned workers watch the liveness pipe; standalone workers
+        // (e.g. SLURM array tasks) may have no stdin at all.
         parallel::watch_parent();
     }
 
@@ -255,6 +257,12 @@ fn main() -> Result<(), Error> {
     let solutions = OnDiskCorpus::new(config.solutions_path.join("crashes"))?;
 
     let mut feedback = NumericFeedback::new(shared.clone(), config.solutions_path.clone());
+    #[cfg(unix)]
+    if let Some((root, _, workers)) = &config.exchange {
+        // Standalone workers (e.g. SLURM array tasks) create the exchange if missing;
+        // launcher mode already created it via exchange::prepare.
+        exchange::ensure(root, *workers).map_err(context("Could not prepare input exchange"))?;
+    }
     #[cfg(unix)]
     let mut exchange = config
         .exchange

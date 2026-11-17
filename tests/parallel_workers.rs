@@ -302,3 +302,109 @@ fn launcher_death_stops_workers_and_their_build_processes() {
     assert!(!root.join("build-0/leaked").exists());
     assert!(!root.join("build-1/leaked").exists());
 }
+
+#[test]
+fn standalone_workers_with_worker_index_exchange_inputs_like_a_slurm_array() {
+    // Two independent processes (like SLURM array tasks) share one workspace and
+    // solutions path; each prepares only its own worker directories and the exchange.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let template = root.join("template");
+    fs::create_dir_all(template.join("src")).unwrap();
+    fs::write(
+        template.join("Makefile"),
+        "snippet.elf: src/snippet.S\n\tcp $< $@\n",
+    )
+    .unwrap();
+    let simulator = root.join("simulator");
+    let analyzer = root.join("analyzer");
+    executable(&simulator, "echo wave > \"$2\"");
+    executable(
+        &analyzer,
+        r#"
+case "$PWD" in
+  */worker-0000/sim) coverage=0.25 ;;
+  *)
+    if [ ! -f original-assembly ]; then cp ../build/src/snippet.S original-assembly; fi
+    if cmp -s ../build/src/snippet.S original-assembly; then coverage=0.5; else coverage=0.75; fi
+    ;;
+esac
+printf 'toggle_activity=12\ntoggle_coverage=%s\n' "$coverage"
+"#,
+    );
+    let workspace = root.join("workspace");
+    let solutions = root.join("solutions");
+    let mut children = Vec::new();
+    for index in 0..2 {
+        children.push(
+            Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
+                .args([
+                    "--backend",
+                    "simulation",
+                    "--workers",
+                    "2",
+                    "--worker-workspace",
+                ])
+                .arg(&workspace)
+                .arg("--worker-index")
+                .arg(index.to_string())
+                .arg("--assembly-environment")
+                .arg(&template)
+                .args([
+                    "--atndecode-path",
+                    "/bin/cat",
+                    "--riscv-toolpath",
+                    "/opt/riscv",
+                    "--solutions-path",
+                ])
+                .arg(&solutions)
+                .arg("--log-file")
+                .arg(root.join("fuzzer.log"))
+                .arg("--simulator-path")
+                .arg(&simulator)
+                .arg("--analyzer-path")
+                .arg(&analyzer)
+                .args([
+                    "--target-scope",
+                    "TOP.dut",
+                    "--simulator-arg={elf}",
+                    "--simulator-arg={vcd}",
+                ])
+                // Array tasks have no launcher pipe on stdin; they must keep running.
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    let start = Instant::now();
+    let global = solutions.join("parallel-exchange/global-best.txt");
+    let imported = solutions.join("worker-0000/import-0002");
+    while !(imported.exists()
+        && fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n")))
+        && start.elapsed() < Duration::from_secs(20)
+    {
+        if children.iter_mut().any(|c| c.try_wait().unwrap().is_some()) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let success = imported.exists()
+        && fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n"));
+    let mut stderr = String::new();
+    for child in &mut children {
+        if child.try_wait().unwrap().is_none() {
+            child.kill().unwrap();
+        }
+    }
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        stderr.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(success, "standalone workers did not exchange inputs: {stderr}");
+    assert!(workspace.join("worker-0000/build/snippet.elf").is_file());
+    assert!(workspace.join("worker-0001/build/snippet.elf").is_file());
+    assert!(root.join("fuzzer.log.worker-0000").is_file());
+    assert!(root.join("fuzzer.log.worker-0001").is_file());
+}

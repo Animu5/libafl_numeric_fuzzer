@@ -67,6 +67,7 @@ pub fn launch(
             .args(&args)
             .arg("--internal-worker-index")
             .arg(index.to_string())
+            .arg("--internal-launcher-child")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .process_group(0)
@@ -108,6 +109,21 @@ pub fn launch(
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Ensures one worker's directories exist: copies the assembly template into the
+/// worker's build directory if missing and creates its simulator working directory.
+/// Used when each worker runs as its own process (e.g. a SLURM job array task), so it
+/// is safe under concurrency: every task only touches its own directories.
+pub fn ensure_worker_dirs(template: &Path, worker: &crate::cli::WorkerDirs) -> io::Result<()> {
+    if let Some(parent) = worker.assembly.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if !worker.assembly.exists() {
+        copy_directory(template, &worker.assembly)?;
+    }
+    fs::create_dir_all(&worker.simulator)?;
+    Ok(())
 }
 
 fn prepare_workspace(
@@ -211,6 +227,31 @@ mod tests {
             b"template"
         );
         assert!(prepare_workspace(&root, &template, &workers).is_err());
+        assert_eq!(
+            fs::read(workers[0].assembly.join("file")).unwrap(),
+            b"changed"
+        );
+    }
+
+    #[test]
+    fn ensure_worker_dirs_prepares_only_its_own_worker_idempotently() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = temp.path().join("template");
+        fs::create_dir(&template).unwrap();
+        fs::write(template.join("file"), b"template").unwrap();
+        let root = temp.path().join("workspace");
+        let workers = dirs(&root, 2);
+        ensure_worker_dirs(&template, &workers[0]).unwrap();
+        assert_eq!(
+            fs::read(workers[0].assembly.join("file")).unwrap(),
+            b"template"
+        );
+        assert!(workers[0].simulator.is_dir());
+        assert!(!workers[1].assembly.exists());
+        assert!(!workers[1].simulator.exists());
+        // Idempotent: existing build content is kept, not overwritten.
+        fs::write(workers[0].assembly.join("file"), b"changed").unwrap();
+        ensure_worker_dirs(&template, &workers[0]).unwrap();
         assert_eq!(
             fs::read(workers[0].assembly.join("file")).unwrap(),
             b"changed"

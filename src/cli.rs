@@ -100,6 +100,18 @@ pub struct Args {
     #[serde(skip)]
     pub internal_worker_index: Option<usize>,
 
+    /// Run only worker N of the parallel worker set as this process, e.g.
+    /// --worker-index "$SLURM_ARRAY_TASK_ID" for a SLURM job array; with --worker-workspace
+    /// each such task prepares its own worker directories. CLI-only: never set in TOML.
+    #[arg(long)]
+    #[serde(skip)]
+    pub worker_index: Option<usize>,
+
+    /// Set by the launcher on its spawned workers so they watch the launcher's liveness pipe
+    #[arg(long, hide = true)]
+    #[serde(skip)]
+    pub internal_launcher_child: bool,
+
     /// Evaluation backend (default: hardware)
     #[arg(long, value_enum)]
     backend: Option<BackendKind>,
@@ -225,7 +237,7 @@ impl Args {
             Some(path) => load_file(path).unwrap_or_else(|e| fail(e)),
             None => Args::default(),
         };
-        let worker_index = self.internal_worker_index;
+        let worker_index = self.internal_worker_index.or(self.worker_index);
         let mut config = self.merge(file).unwrap_or_else(|e| fail(e));
         if let Some(index) = worker_index {
             config.select_worker(index).unwrap_or_else(|e| fail(e));
@@ -470,6 +482,13 @@ impl Config {
             .take()
             .ok_or("Worker index requires parallel configuration")?;
         let worker = dirs.get(index).ok_or("Worker index out of range")?;
+        #[cfg(unix)]
+        if self.worker_workspace.is_some() {
+            // Standalone worker (e.g. a SLURM array task, no launcher): prepare only this
+            // worker's directories. When the launcher spawned us, they already exist.
+            crate::parallel::ensure_worker_dirs(&self.assembly_environment, worker)
+                .map_err(|e| format!("Cannot prepare worker workspace: {e}"))?;
+        }
         self.assembly_environment = worker.assembly.clone();
         match &mut self.backend {
             BackendConfig::Simulation {
@@ -704,5 +723,15 @@ mod tests {
         let config = simulation().merge(Args::default()).unwrap();
         assert_eq!(config.log_level, None);
         assert_eq!(config.monitor, MonitorKind::Tui);
+    }
+
+    #[test]
+    fn worker_index_is_cli_only() {
+        let args = Args::try_parse_from(["fuzzer", "--worker-index", "3"]).unwrap();
+        assert_eq!(args.worker_index, Some(3));
+        assert!(!args.internal_launcher_child);
+        // Per-task options must not be settable through the shared TOML config.
+        assert!(toml::from_str::<Args>("worker_index = 1").is_err());
+        assert!(toml::from_str::<Args>("internal_launcher_child = true").is_err());
     }
 }
