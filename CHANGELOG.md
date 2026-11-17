@@ -23,6 +23,11 @@ Notable changes are summarized here. Earlier history is available in Git.
 - Select the progress monitor with `--monitor`/`monitor`: `tui` (default), `print`
   (stdout lines), `log` (periodic stats lines in the log file, for headless runs),
   or `none`.
+- Add `--worker-index N` to run a single parallel worker as its own process (e.g.
+  `--worker-index "$SLURM_ARRAY_TASK_ID"` in a SLURM job array); each such task
+  prepares its own `--worker-workspace` directories and the input-exchange directory
+  is created idempotently at startup. See `slurm-fuzzing.example.sbatch` and
+  RUNNING.md. Launcher-spawned workers are unchanged and keep the liveness watch.
 
 ### Changed
 

@@ -232,3 +232,29 @@ and logs are named `<log_file>.worker-0000`, etc. Worker stdout is discarded, so
 If a worker exits, the launcher stops the others and reports an error. When the
 launcher exits, workers and their active build processes are terminated; active
 simulation supervisors then clean up their own VCDs.
+
+## SLURM
+
+Two patterns work; see `slurm-fuzzing.example.sbatch`.
+
+1. **Single job, launcher spawns local workers** — allocate cores on one node and let
+   the launcher manage the workers as child processes:
+   `#SBATCH --ntasks=1 --cpus-per-task=16`, then run
+   `libafl_fuzzer --config ... --workers 16 --worker-workspace $SCRATCH/workspace ...`.
+2. **Job array, one worker per task across nodes** — `#SBATCH --array=0-15` and run
+   `libafl_fuzzer --config ... --workers 16 --worker-workspace $SCRATCH/workspace
+   --worker-index "$SLURM_ARRAY_TASK_ID" ...` on each task. `--worker-index` is
+   CLI-only (never in the shared TOML). Each array task prepares only its own
+   `worker-NNNN` directories inside the workspace and creates the input-exchange
+   directory if missing, so no separate launcher or setup step is needed. Array tasks
+   do not watch a launcher pipe, so they survive independently; if one task dies, the
+   others keep going.
+
+For both patterns: the workspace and `solutions_path` (including `parallel-exchange`)
+must be on a filesystem shared by all tasks — on a cluster that is your scratch/NFS,
+not `/tmp`. Use a fresh workspace and solutions path per campaign; stale exchange or
+workspace contents from a previous run are reused or rejected. Per-task logs are
+`<log_file>.worker-NNNN`; the shared global best is
+`<solutions_path>/parallel-exchange/global-best.txt`. SLURM captures each task's
+stdout in its output file, so `--monitor print` or `log` both work there; `log` keeps
+progress in the per-worker log files.

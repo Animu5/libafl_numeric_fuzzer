@@ -24,6 +24,17 @@ pub fn prepare(solutions: &Path, workers: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Idempotently creates the exchange root and all per-worker directories. Used by
+/// workers running as their own processes (e.g. SLURM array tasks); in launcher mode
+/// the strict `prepare` already created them.
+pub fn ensure(root: &Path, workers: usize) -> io::Result<()> {
+    fs::create_dir_all(root)?;
+    for index in 0..workers {
+        fs::create_dir_all(root.join(format!("worker-{index:04}")))?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct Exchange {
     root: PathBuf,
@@ -212,5 +223,15 @@ mod tests {
         assert_eq!(inputs[0].as_ref(), &[1]);
         assert!(receiver.pending_inputs().unwrap().is_empty());
         assert!(prepare(temp.path(), 2).is_err());
+    }
+
+    #[test]
+    fn ensure_creates_the_exchange_idempotently() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("parallel-exchange");
+        ensure(&root, 3).unwrap();
+        assert!(root.join("worker-0000").is_dir());
+        assert!(root.join("worker-0002").is_dir());
+        ensure(&root, 3).unwrap();
     }
 }
