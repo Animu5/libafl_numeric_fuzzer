@@ -180,24 +180,43 @@ behind.
 
 ## Parallel simulation workers
 
-Set `workers = 2` (or `--workers 2`) and provide an ordered
+Set `workers = 2` (or `--workers 2`) and `worker_workspace = "/path/to/new-workspace"`
+(or `--worker-workspace /path/to/new-workspace`) to create directories automatically.
+The workspace parent must exist and the workspace itself must not exist; it is
+never overwritten or automatically removed. The launcher copies the complete
+`assembly_environment` into each `worker-NNNN/build` and creates an empty
+`worker-NNNN/sim` working directory. The assembly template must not contain
+symlinks or special files. Absolute paths, Makefile references and simulator
+arguments must not cause workers to write to a shared location. Simulator
+resources needed in its working directory must be supplied using absolute paths;
+the simulator working-directory template is not copied in this mode. If
+preparation fails, partial directories are retained for inspection.
+
+Alternatively, omit `worker_workspace` and provide an ordered
 `worker_assembly_environment` and `worker_simulator_working_dir` array with one
 existing directory per worker. On the CLI, repeat
 `--worker-assembly-environment PATH` and `--worker-simulator-working-dir PATH`.
 The original `assembly_environment` remains required, but the per-worker
 directories are used when parallel workers are enabled.
 
-Create independent, complete copies of the build environment and simulator
-working directory yourself; the fuzzer does not copy them. Directories for
+With explicit lists, create independent, complete copies of the build environment
+and simulator working directory yourself. Directories for
 different workers must not overlap. Avoid shared writable paths or symlinks inside
 those directories: canonical directory checks cannot detect a Makefile or simulator
 that writes to an external shared location. Parallel operation is available only
 for simulation, not a single shared hardware target.
 
-Each worker independently mutates seeds and keeps its own corpus, numeric best,
-and `best.S` under `<solutions_path>/worker-0000`, `worker-0001`, and so on.
-Workers do not exchange inputs or maintain a global best; compare their recorded
-scores to find the overall result. Snippet archives use the same subdirectories,
+Each worker keeps its own LibAFL corpus and local `best.S` under
+`<solutions_path>/worker-0000`, `worker-0001`, and so on. Workers publish their
+local improvements and periodically import distinct inputs published by peers,
+re-evaluating them through LibAFL and adding them to the receiving corpus.
+The shared `<solutions_path>/parallel-exchange/global-best.txt` records the
+full-precision score, activity, worker, and paths to the corresponding immutable
+input and assembly relative to `parallel-exchange`. Global improvements are also
+printed on the launcher terminal. The exchange directory must not already exist:
+use a fresh solutions path for each run, especially if simulation settings change.
+Input sharing is filesystem-based and is not instantaneous; each imported input
+is re-simulated by each receiving worker. Snippet archives use the same subdirectories,
 and logs are named `<log_file>.worker-0000`, etc. Worker TUI output is suppressed.
 If a worker exits, the launcher stops the others and reports an error. When the
 launcher exits, workers and their active build processes are terminated; active

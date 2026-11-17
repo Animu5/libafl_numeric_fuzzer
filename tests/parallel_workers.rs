@@ -15,6 +15,108 @@ fn executable(path: &Path, script: &str) {
 }
 
 #[test]
+fn generated_workspaces_exchange_inputs_and_report_global_best() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let template = root.join("template");
+    fs::create_dir_all(template.join("src")).unwrap();
+    fs::write(
+        template.join("Makefile"),
+        "snippet.elf: src/snippet.S\n\tcp $< $@\n",
+    )
+    .unwrap();
+    let simulator = root.join("simulator");
+    let analyzer = root.join("analyzer");
+    executable(&simulator, "echo wave > \"$2\"");
+    executable(
+        &analyzer,
+        r#"
+case "$PWD" in
+  */worker-0000/sim) coverage=0.25 ;;
+  *)
+    if [ ! -f original-assembly ]; then cp ../build/src/snippet.S original-assembly; fi
+    if cmp -s ../build/src/snippet.S original-assembly; then coverage=0.5; else coverage=0.75; fi
+    ;;
+esac
+printf 'toggle_activity=12\ntoggle_coverage=%s\n' "$coverage"
+"#,
+    );
+    let workspace = root.join("workspace");
+    let solutions = root.join("solutions");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
+        .args([
+            "--backend",
+            "simulation",
+            "--workers",
+            "2",
+            "--worker-workspace",
+        ])
+        .arg(&workspace)
+        .arg("--assembly-environment")
+        .arg(&template)
+        .args([
+            "--atndecode-path",
+            "/bin/cat",
+            "--riscv-toolpath",
+            "/opt/riscv",
+            "--solutions-path",
+        ])
+        .arg(&solutions)
+        .arg("--log-file")
+        .arg(root.join("fuzzer.log"))
+        .arg("--simulator-path")
+        .arg(simulator)
+        .arg("--analyzer-path")
+        .arg(analyzer)
+        .args([
+            "--target-scope",
+            "TOP.dut",
+            "--simulator-arg={elf}",
+            "--simulator-arg={vcd}",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let global = solutions.join("parallel-exchange/global-best.txt");
+    let imported = solutions.join("worker-0000/import-0002");
+    while !(imported.exists()
+        && fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n")))
+        && start.elapsed() < Duration::from_secs(20)
+    {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let success = imported.exists()
+        && fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n"));
+    if child.try_wait().unwrap().is_none() {
+        child.kill().unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        success,
+        "workers did not exchange inputs: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(workspace.join("worker-0000/build/snippet.elf").is_file());
+    assert!(workspace.join("worker-0001/build/snippet.elf").is_file());
+    assert!(!template.join("src/snippet.S").exists());
+    let record = fs::read_to_string(global).unwrap();
+    let input = record
+        .lines()
+        .find_map(|s| s.strip_prefix("input="))
+        .unwrap();
+    assert_eq!(
+        fs::read(solutions.join("parallel-exchange").join(input)).unwrap(),
+        fs::read(imported).unwrap()
+    );
+}
+
+#[test]
 fn independent_workers_execute_in_parallel_with_isolated_outputs() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

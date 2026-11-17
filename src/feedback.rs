@@ -22,14 +22,17 @@ pub struct Shared {
     pub assembly: RefCell<Option<String>>,
     /// Unrecoverable harness error; makes the next `is_interesting` abort the fuzz loop.
     pub fatal: RefCell<Option<String>>,
+    #[cfg(unix)]
+    pub input: RefCell<Vec<u8>>,
+    #[cfg(unix)]
+    pub importing: Cell<bool>,
 }
 
 /// Scores each run by the evaluation that the harness stores in `shared`.
 /// A fatal harness error stored there aborts the fuzz loop.
 ///
-/// Only a new best score is interesting, so every testcase this feedback lets through is the
-/// current best. Its assembly is saved next to the binary input as `<filename>.S` and as
-/// `best.S`, which is therefore always the best snippet seen so far, even after an interrupt.
+/// A new best score is interesting. Valid imported inputs are also admitted to the corpus.
+/// Assembly for new best inputs is saved next to the input and as `best.S`.
 #[derive(Clone, Debug)]
 pub struct NumericFeedback {
     /// Highest score seen so far.
@@ -38,6 +41,7 @@ pub struct NumericFeedback {
     metric: Option<Metric>,
     /// Result of the last `is_interesting` call.
     last: bool,
+    last_best: bool,
     /// Number of testcases saved, used in the filename.
     count: u64,
     /// Evaluation of the last run, recorded in the testcase filename.
@@ -47,6 +51,8 @@ pub struct NumericFeedback {
     /// Directory that receives `<filename>.S` and `best.S`.
     solutions_dir: PathBuf,
     shared: Rc<Shared>,
+    #[cfg(unix)]
+    exchange: Option<crate::exchange::Exchange>,
     name: Cow<'static, str>,
 }
 
@@ -57,13 +63,21 @@ impl NumericFeedback {
             best: f64::MIN,
             metric: None,
             last: false,
+            last_best: false,
             count: 0,
             last_evaluation: None,
             last_assembly: None,
             solutions_dir,
             shared,
+            #[cfg(unix)]
+            exchange: None,
             name: Cow::Borrowed("NumericFeedback"),
         }
+    }
+
+    #[cfg(unix)]
+    pub fn set_exchange(&mut self, exchange: crate::exchange::Exchange) {
+        self.exchange = Some(exchange);
     }
 }
 
@@ -91,7 +105,7 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
 
         self.last_evaluation = self.shared.evaluation.take();
         self.last_assembly = self.shared.assembly.borrow_mut().take();
-        self.last = match self.last_evaluation {
+        self.last_best = match self.last_evaluation {
             Some(evaluation) => {
                 if self
                     .metric
@@ -103,6 +117,17 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
                 }
                 self.metric = Some(evaluation.metric());
                 if evaluation.score() > self.best {
+                    #[cfg(unix)]
+                    if let Some(exchange) = &self.exchange {
+                        let assembly = self.last_assembly.as_deref().ok_or_else(|| {
+                            Error::illegal_state("No assembly for measured parallel input")
+                        })?;
+                        exchange
+                            .publish(&self.shared.input.borrow(), assembly, evaluation)
+                            .map_err(|e| {
+                                Error::illegal_state(format!("Cannot publish parallel input: {e}"))
+                            })?;
+                    }
                     self.best = evaluation.score();
                     match evaluation.metric() {
                         Metric::PowerDelta => {
@@ -119,6 +144,11 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
             }
             _ => false,
         };
+        self.last = self.last_best;
+        #[cfg(unix)]
+        if self.shared.importing.get() && self.last_evaluation.is_some() {
+            self.last = true;
+        }
         Ok(self.last)
     }
 
@@ -134,14 +164,19 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
         _observers: &OT,
         testcase: &mut Testcase<I>,
     ) -> Result<(), Error> {
-        if let Some(evaluation) = self.last_evaluation {
+        if self.last_best {
+            if let Some(evaluation) = self.last_evaluation {
+                self.count += 1;
+                let label = match evaluation.metric() {
+                    Metric::PowerDelta => "delta",
+                    Metric::ToggleCoverage => "toggle_coverage",
+                };
+                let filename = format!("{:04}_{label}_{:.6}", self.count, evaluation.score());
+                *testcase.filename_mut() = Some(filename.clone());
+            }
+        } else {
             self.count += 1;
-            let label = match evaluation.metric() {
-                Metric::PowerDelta => "delta",
-                Metric::ToggleCoverage => "toggle_coverage",
-            };
-            let filename = format!("{:04}_{label}_{:.6}", self.count, evaluation.score());
-            *testcase.filename_mut() = Some(filename.clone());
+            *testcase.filename_mut() = Some(format!("import-{:04}", self.count));
         }
         if let Some(assembly) = self.last_assembly.take() {
             let name = testcase
@@ -151,8 +186,11 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
             std::fs::write(self.solutions_dir.join(format!("{name}.S")), &assembly).map_err(
                 |e| Error::illegal_state(format!("Could not write snippet assembly: {e}")),
             )?;
-            std::fs::write(self.solutions_dir.join("best.S"), &assembly)
-                .map_err(|e| Error::illegal_state(format!("Could not write best snippet: {e}")))?;
+            if self.last_best {
+                std::fs::write(self.solutions_dir.join("best.S"), &assembly).map_err(|e| {
+                    Error::illegal_state(format!("Could not write best snippet: {e}"))
+                })?;
+            }
             tracing::debug!("Saved snippet assembly to {name}.S and best.S");
         }
         Ok(())
@@ -204,6 +242,40 @@ mod tests {
         assert!(run(&mut f, Some(2.0)).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
         let _ = shared;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn imported_inputs_require_valid_results_and_do_not_replace_local_best() {
+        let (mut f, shared, dir) = feedback();
+        *shared.assembly.borrow_mut() = Some("best".into());
+        assert!(run(&mut f, Some(2.0)).unwrap());
+        let mut best = Testcase::<BytesInput>::new(BytesInput::new(vec![]));
+        <NumericFeedback as Feedback<(), BytesInput, (), ()>>::append_metadata(
+            &mut f,
+            &mut (),
+            &mut (),
+            &(),
+            &mut best,
+        )
+        .unwrap();
+
+        shared.importing.set(true);
+        assert!(!run(&mut f, None).unwrap());
+        *shared.assembly.borrow_mut() = Some("import".into());
+        assert!(run(&mut f, Some(1.0)).unwrap());
+        let mut imported = Testcase::<BytesInput>::new(BytesInput::new(vec![]));
+        <NumericFeedback as Feedback<(), BytesInput, (), ()>>::append_metadata(
+            &mut f,
+            &mut (),
+            &mut (),
+            &(),
+            &mut imported,
+        )
+        .unwrap();
+        assert_eq!(imported.filename().as_deref(), Some("import-0002"));
+        assert_eq!(std::fs::read_to_string(dir.join("best.S")).unwrap(), "best");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

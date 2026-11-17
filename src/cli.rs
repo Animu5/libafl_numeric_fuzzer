@@ -69,6 +69,10 @@ pub struct Args {
     #[arg(long)]
     worker_simulator_working_dir: Option<Vec<PathBuf>>,
 
+    /// Create a fresh parallel workspace with a copy of the assembly environment per worker
+    #[arg(long)]
+    worker_workspace: Option<PathBuf>,
+
     #[arg(long, hide = true)]
     #[serde(skip)]
     pub internal_worker_index: Option<usize>,
@@ -147,6 +151,8 @@ pub struct Config {
     pub backend: BackendConfig,
     pub exec_timeout_ms: u64,
     pub worker_dirs: Option<Vec<WorkerDirs>>,
+    pub worker_workspace: Option<PathBuf>,
+    pub exchange: Option<(PathBuf, usize, usize)>,
 }
 
 #[derive(Debug)]
@@ -314,9 +320,10 @@ impl Args {
             .worker_simulator_working_dir
             .or(file.worker_simulator_working_dir)
             .unwrap_or_default();
+        let worker_workspace = self.worker_workspace.or(file.worker_workspace);
         let worker_dirs = if workers == 1 {
-            if !builds.is_empty() || !simulators.is_empty() {
-                return Err("Worker directory lists require --workers greater than 1".into());
+            if !builds.is_empty() || !simulators.is_empty() || worker_workspace.is_some() {
+                return Err("Worker directories require --workers greater than 1".into());
             }
             None
         } else {
@@ -325,33 +332,65 @@ impl Args {
                     "Parallel workers require --workers >= 2 and the simulation backend".into(),
                 );
             }
-            if builds.len() != workers || simulators.len() != workers {
-                return Err("Provide one worker assembly environment and simulator working directory per worker".into());
+            if worker_workspace.is_some() && (!builds.is_empty() || !simulators.is_empty()) {
+                return Err(
+                    "--worker-workspace cannot be combined with worker directory lists".into(),
+                );
             }
-            let mut dirs = Vec::with_capacity(workers);
-            for (assembly, simulator) in builds.into_iter().zip(simulators) {
-                let assembly = canonical_directory(&assembly)?;
-                let simulator = canonical_directory(&simulator)?;
-                for previous in &dirs {
-                    let previous: &WorkerDirs = previous;
-                    for first in [&assembly, &simulator] {
-                        for second in [&previous.assembly, &previous.simulator] {
-                            if first.starts_with(second) || second.starts_with(first) {
-                                return Err(format!(
-                                    "Worker directories overlap: {} and {}",
-                                    first.display(),
-                                    second.display()
-                                ));
+            if let Some(workspace) = &worker_workspace {
+                let parent = workspace
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                let parent = canonical_directory(parent)?;
+                let name = workspace
+                    .file_name()
+                    .ok_or("Worker workspace needs a directory name")?;
+                let root = parent.join(name);
+                let template = canonical_directory(&assembly_environment)?;
+                if root.starts_with(&template) || template.starts_with(&root) {
+                    return Err("Worker workspace and assembly template must not overlap".into());
+                }
+                Some(
+                    (0..workers)
+                        .map(|index| {
+                            let worker = root.join(format!("worker-{index:04}"));
+                            WorkerDirs {
+                                assembly: worker.join("build"),
+                                simulator: worker.join("sim"),
+                            }
+                        })
+                        .collect(),
+                )
+            } else {
+                if builds.len() != workers || simulators.len() != workers {
+                    return Err("Provide one worker assembly environment and simulator working directory per worker".into());
+                }
+                let mut dirs = Vec::with_capacity(workers);
+                for (assembly, simulator) in builds.into_iter().zip(simulators) {
+                    let assembly = canonical_directory(&assembly)?;
+                    let simulator = canonical_directory(&simulator)?;
+                    for previous in &dirs {
+                        let previous: &WorkerDirs = previous;
+                        for first in [&assembly, &simulator] {
+                            for second in [&previous.assembly, &previous.simulator] {
+                                if first.starts_with(second) || second.starts_with(first) {
+                                    return Err(format!(
+                                        "Worker directories overlap: {} and {}",
+                                        first.display(),
+                                        second.display()
+                                    ));
+                                }
                             }
                         }
                     }
+                    dirs.push(WorkerDirs {
+                        assembly,
+                        simulator,
+                    });
                 }
-                dirs.push(WorkerDirs {
-                    assembly,
-                    simulator,
-                });
+                Some(dirs)
             }
-            Some(dirs)
         };
         Ok(Config {
             assembly_environment,
@@ -373,6 +412,8 @@ impl Args {
             backend,
             exec_timeout_ms,
             worker_dirs,
+            worker_workspace,
+            exchange: None,
         })
     }
 }
@@ -405,6 +446,11 @@ impl Config {
             _ => return Err("Parallel workers require simulation".into()),
         }
         let name = format!("worker-{index:04}");
+        self.exchange = Some((
+            self.solutions_path.join("parallel-exchange"),
+            index,
+            dirs.len(),
+        ));
         self.solutions_path = self.solutions_path.join(&name);
         self.snippet_dir = self.snippet_dir.take().map(|dir| dir.join(&name));
         let mut log = self.log_file.as_os_str().to_os_string();

@@ -1,5 +1,7 @@
 mod cli;
 mod evaluation;
+#[cfg(unix)]
+mod exchange;
 mod feedback;
 #[cfg(feature = "hardware")]
 mod hardware;
@@ -120,7 +122,13 @@ fn main() -> Result<(), Error> {
     let config = args.resolve();
     if let Some(workers) = &config.worker_dirs {
         #[cfg(unix)]
-        return parallel::launch(workers.len()).map_err(context("Parallel workers failed"));
+        return parallel::launch(
+            workers,
+            config.worker_workspace.as_deref(),
+            &config.assembly_environment,
+            &config.solutions_path,
+        )
+        .map_err(context("Parallel workers failed"));
         #[cfg(not(unix))]
         return Err(Error::illegal_argument("Parallel workers require Unix"));
     }
@@ -240,7 +248,15 @@ fn main() -> Result<(), Error> {
     let corpus = OnDiskCorpus::<BytesInput>::new(&config.solutions_path)?;
     let solutions = OnDiskCorpus::new(config.solutions_path.join("crashes"))?;
 
-    let mut feedback = NumericFeedback::new(shared, config.solutions_path.clone());
+    let mut feedback = NumericFeedback::new(shared.clone(), config.solutions_path.clone());
+    #[cfg(unix)]
+    let mut exchange = config
+        .exchange
+        .map(|(path, index, workers)| exchange::Exchange::new(path, index, workers));
+    #[cfg(unix)]
+    if let Some(exchange) = &exchange {
+        feedback.set_exchange(exchange.clone());
+    }
     let mut objective = ();
     let mut state = StdState::new(
         StdRand::with_seed(current_nanos()),
@@ -268,12 +284,31 @@ fn main() -> Result<(), Error> {
         .build()?;
 
     for seed in seeds {
+        #[cfg(unix)]
+        if let Some(exchange) = &mut exchange {
+            exchange.remember_input(seed.as_ref());
+        }
         fuzzer.add_input(&mut state, &mut executor, &mut manager, seed)?;
     }
 
     let mut stages = tuple_list!(StdMutationalStage::new(HavocScheduledMutator::new(
         havoc_mutations()
     )));
+    #[cfg(unix)]
+    if let Some(exchange) = &mut exchange {
+        loop {
+            fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+            for input in exchange
+                .pending_inputs()
+                .map_err(context("Input exchange failed"))?
+            {
+                shared.importing.set(true);
+                let result = fuzzer.evaluate_input(&mut state, &mut executor, &mut manager, &input);
+                shared.importing.set(false);
+                result?;
+            }
+        }
+    }
     fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut manager)?;
 
     Ok(())
