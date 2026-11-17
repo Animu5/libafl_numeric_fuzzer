@@ -25,6 +25,9 @@ pub struct SimulationConfig {
     pub analyzer: PathBuf,
     pub target_scope: String,
     pub exclude_signal_file: Option<PathBuf>,
+    /// Parent directory for the per-run VCD directory. Defaults to `working_dir` so large
+    /// traces are not written to the (often size-limited) system temp directory.
+    pub vcd_dir: Option<PathBuf>,
     pub simulator_timeout: Duration,
     pub analyzer_timeout: Duration,
 }
@@ -44,6 +47,7 @@ impl SimulationBackend {
         config.analyzer = absolute(&cwd, &config.analyzer);
         config.working_dir = absolute(&cwd, &config.working_dir);
         config.exclude_signal_file = config.exclude_signal_file.map(|p| absolute(&cwd, &p));
+        config.vcd_dir = config.vcd_dir.map(|p| absolute(&cwd, &p));
         if !config.working_dir.is_dir() {
             return Err(EvaluationError::Fatal(format!(
                 "Simulation working directory is not a directory: {}",
@@ -65,6 +69,14 @@ impl SimulationBackend {
             if !path.is_file() {
                 return Err(EvaluationError::Fatal(format!(
                     "Analyzer exclusion file is not a file: {}",
+                    path.display()
+                )));
+            }
+        }
+        if let Some(path) = &config.vcd_dir {
+            if !path.is_dir() {
+                return Err(EvaluationError::Fatal(format!(
+                    "VCD directory is not a directory: {}",
                     path.display()
                 )));
             }
@@ -104,10 +116,20 @@ impl SimulationBackend {
                 elf.display()
             ))
         })?;
+        let parent = self
+            .config
+            .vcd_dir
+            .as_deref()
+            .unwrap_or(&self.config.working_dir);
         let work = tempfile::Builder::new()
             .prefix("numeric-fuzzer-vcd-")
-            .tempdir()
-            .map_err(|e| EvaluationError::Fatal(format!("Cannot create VCD directory: {e}")))?;
+            .tempdir_in(parent)
+            .map_err(|e| {
+                EvaluationError::Fatal(format!(
+                    "Cannot create VCD directory in {}: {e}",
+                    parent.display()
+                ))
+            })?;
         let run_dir = std::fs::canonicalize(work.path())
             .map_err(|e| EvaluationError::Fatal(format!("Cannot resolve VCD directory: {e}")))?;
         let result = self.run_in(&elf, &run_dir.join("trace.vcd"), cancelled);
@@ -260,6 +282,12 @@ impl SimulationBackend {
             .arg(
                 self.config
                     .exclude_signal_file
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new("")),
+            )
+            .arg(
+                self.config
+                    .vcd_dir
                     .as_deref()
                     .unwrap_or_else(|| Path::new("")),
             )
@@ -611,6 +639,7 @@ fn supervisor_evaluate(cancelled: &AtomicBool) -> Result<Evaluation, EvaluationE
         .into_string()
         .map_err(|_| EvaluationError::Fatal("Target scope is not UTF-8".into()))?;
     let exclusion = PathBuf::from(next("exclusions")?);
+    let vcd_dir = PathBuf::from(next("vcd directory")?);
     let mut number = |name| -> Result<u64, EvaluationError> {
         next(name)?
             .to_str()
@@ -636,6 +665,11 @@ fn supervisor_evaluate(cancelled: &AtomicBool) -> Result<Evaluation, EvaluationE
             None
         } else {
             Some(exclusion)
+        },
+        vcd_dir: if vcd_dir.as_os_str().is_empty() {
+            None
+        } else {
+            Some(vcd_dir)
         },
         simulator_timeout: Duration::new(sim_secs, sim_nanos as u32),
         analyzer_timeout: Duration::new(analyzer_secs, analyzer_nanos as u32),
@@ -695,6 +729,7 @@ mod tests {
                 analyzer: self.analyzer.clone(),
                 target_scope: "TOP.dut".into(),
                 exclude_signal_file: None,
+                vcd_dir: None,
                 simulator_timeout: Duration::from_secs(2),
                 analyzer_timeout: Duration::from_secs(2),
             }
@@ -734,6 +769,38 @@ printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
         let second = fs::read_to_string(fixture.dir.path().join("vcd-path")).unwrap();
         assert_ne!(first, second);
         assert!(!Path::new(&second).exists());
+    }
+
+    #[test]
+    fn vcd_directories_stay_out_of_the_system_temp_dir() {
+        let fixture = Fixture::new();
+        fixture.success_scripts();
+        let working_dir = fs::canonicalize(fixture.dir.path()).unwrap();
+        let mut backend = SimulationBackend::new(fixture.config()).unwrap();
+        backend.evaluate(&fixture.elf).unwrap();
+        // Default: the trace directory is created inside the simulator working directory.
+        let vcd = fs::read_to_string(fixture.dir.path().join("vcd-path")).unwrap();
+        assert!(Path::new(&vcd).starts_with(&working_dir), "{vcd}");
+
+        // With vcd_dir set, the trace directory is created there instead.
+        let traces = fixture.dir.path().join("traces");
+        fs::create_dir(&traces).unwrap();
+        let vcd_root = fs::canonicalize(&traces).unwrap();
+        let mut config = fixture.config();
+        config.vcd_dir = Some(vcd_root.clone());
+        let mut backend = SimulationBackend::new(config).unwrap();
+        backend.evaluate(&fixture.elf).unwrap();
+        let vcd = fs::read_to_string(fixture.dir.path().join("vcd-path")).unwrap();
+        assert!(Path::new(&vcd).starts_with(&vcd_root), "{vcd}");
+        assert!(!Path::new(&vcd).exists());
+
+        // A vcd_dir that is not a directory is a configuration error.
+        let mut config = fixture.config();
+        config.vcd_dir = Some(fixture.dir.path().join("gone"));
+        assert!(matches!(
+            SimulationBackend::new(config),
+            Err(EvaluationError::Fatal(_))
+        ));
     }
 
     #[test]
