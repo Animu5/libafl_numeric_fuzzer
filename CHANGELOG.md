@@ -26,6 +26,9 @@ Notable changes are summarized here. Earlier history is available in Git.
 
 ### Changed
 
+- Raise the default simulation timeouts to fit multi-minute 10M-cycle Verilator
+  runs: simulator 60 s to 10 min, analyzer 30 s to 2 min, executor 2 min to 15 min;
+  all remain configurable and the executor default must still exceed their sum.
 - Make skipped-input warnings diagnostic: they now include the input length and a
   hex preview, the failing build step with its paths, and explicit errors for a
   missing assembly environment, `src/` directory, or decoder binary; simulation

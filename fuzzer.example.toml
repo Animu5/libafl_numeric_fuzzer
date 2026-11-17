@@ -14,6 +14,6 @@ scope_timeout_ms = 20000
 # monitor = "tui"  # progress display: "tui", "print" (stdout), "log" (lines in the log file), "none"
 # openocd_addr = "127.0.0.1:6666"
 # scope_acquire_timeout_ms = 30000
-# exec_timeout_ms = 120000
+# exec_timeout_ms = 900000
 # snippet_dir = "./snippets"  # keep every decoded snippet as NNNNNN.S (debugging)
 # settle_ms = 100

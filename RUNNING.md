@@ -108,7 +108,7 @@ Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on
 
 ## Run timeout
 
-LibAFL kills the process if one run takes longer than its executor timeout (default 5 s), which a build, a program load and two scope acquisitions exceed. `--exec-timeout-ms` (default 120000) sets it; it must be larger than the sum of build time, load time, both acquisitions and `--settle-ms`. A timeout shows up in the log as `Timeout in fuzz run.`
+LibAFL kills the process if one run takes longer than its executor timeout (default 5 s), which a build, a program load and two scope acquisitions exceed. `--exec-timeout-ms` (default 900000) sets it; it must be larger than the sum of build time, load time, both acquisitions and `--settle-ms` (simulation: build time plus both subprocess deadlines). A timeout shows up in the log as `Timeout in fuzz run.`
 
 ## Oscilloscope (VISA)
 
@@ -131,7 +131,9 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 Select `--backend simulation` or `backend = "simulation"` in TOML; the default
 is hardware. See `fuzzer.simulation.example.toml`. The backend accepts paths to the built simulator and
 `vcdtogglerate`, a simulator working directory, ordered simulator arguments, a
-target scope, an optional exclusion file, and separate process timeouts.
+target scope, an optional exclusion file, and separate process timeouts
+(`--simulator-timeout-ms`, default 600000; `--analyzer-timeout-ms`, default 120000 —
+10,000,000 cycles takes minutes in Verilator, so the defaults leave room for that).
 Relative configured paths resolve from the fuzzer's starting directory, not the
 simulator working directory. Arguments are passed directly without a shell:
 `{elf}` and `{vcd}` are replaced within each argument by absolute paths. Both
