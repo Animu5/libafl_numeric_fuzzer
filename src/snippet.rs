@@ -182,6 +182,9 @@ impl SnippetBuilder {
         );
         let mut child = Command::new(&self.atndecode_path)
             .current_dir(&self.assembly_environment)
+            // Toolchain temp files must not go to /tmp (often size-limited); the assembly
+            // environment already holds the build outputs, so it has space.
+            .env("TMPDIR", &self.assembly_environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -261,13 +264,15 @@ impl SnippetBuilder {
     /// Runs `make` in the assembly environment.
     fn make(&self) -> Result<(), BuildError> {
         tracing::debug!(
-            "Running make -B in {:?} with RISCV={:?}",
+            "Running make -B in {:?} with RISCV={:?} and TMPDIR={:?}",
             self.assembly_environment,
-            self.riscv_toolpath
+            self.riscv_toolpath,
+            self.assembly_environment
         );
         let out = Command::new("make")
             .arg("-B")
             .env("RISCV", &self.riscv_toolpath)
+            .env("TMPDIR", &self.assembly_environment)
             .current_dir(&self.assembly_environment)
             .output()
             .map_err(|e| {
@@ -336,6 +341,18 @@ mod tests {
         let (dir, mut b) = env("/bin/cat", "snippet.elf:\n\techo $$RISCV > $@\n");
         let elf = b.build(b"x").unwrap();
         assert_eq!(std::fs::read_to_string(elf).unwrap().trim(), "/opt/riscv");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_receives_tmpdir_inside_the_assembly_environment() {
+        let (dir, mut b) = env("/bin/cat", "snippet.elf:\n\techo $$TMPDIR > $@\n");
+        let elf = b.build(b"x").unwrap();
+        // The toolchain must not fall back to /tmp for its intermediate files.
+        assert_eq!(
+            std::fs::read_to_string(elf).unwrap().trim(),
+            dir.to_str().unwrap()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

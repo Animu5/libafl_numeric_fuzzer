@@ -26,6 +26,9 @@ Notable changes are summarized here. Earlier history is available in Git.
 
 ### Changed
 
+- Run the decoder and `make` with `TMPDIR` set to the assembly environment, and the
+  simulator and analyzer with `TMPDIR` set to the simulator working directory, so no
+  toolchain or subprocess intermediate files are written to the system temp directory.
 - Create per-run VCD trace directories under `vcd_dir`/`--vcd-dir` (default: the
   simulator working directory) instead of the system temp directory, which is often
   too small for multi-gigabyte traces.
