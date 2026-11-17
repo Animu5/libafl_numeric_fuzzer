@@ -185,9 +185,14 @@ also closes the pipe. Configure LibAFL's outer timeout above build time plus bot
 subprocess deadlines. The existing decoder and `make` still have no individual
 timeouts and are not supervised by this mechanism.
 
+Per-run VCD directories are named `numeric-fuzzer-vcd-<host>-<pid>-*`; at the start
+of every evaluation, leftovers of dead same-host processes (e.g. a supervisor
+SIGKILLed by SLURM at walltime or a node crash) are removed automatically, while
+directories of live processes and of other hosts are never touched.
+
 A machine crash, termination of the supervisor itself, or subprocesses that
 deliberately leave their process group can still leave processes or artifacts
-behind.
+behind (until the next evaluation on that host sweeps the stale VCD directory).
 
 ## Parallel simulation workers
 

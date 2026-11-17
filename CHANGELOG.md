@@ -38,7 +38,9 @@ Notable changes are summarized here. Earlier history is available in Git.
   from the child's working directory and the toolchain silently falls back to `/tmp`.
 - Create per-run VCD trace directories under `vcd_dir`/`--vcd-dir` (default: the
   simulator working directory) instead of the system temp directory, which is often
-  too small for multi-gigabyte traces.
+  too small for multi-gigabyte traces. Directories are named
+  `numeric-fuzzer-vcd-<host>-<pid>-*` and leftovers of dead same-host processes
+  (e.g. after a SIGKILL) are swept at the start of each evaluation.
 - Raise the default simulation timeouts to fit multi-minute 10M-cycle Verilator
   runs: simulator 60 s to 10 min, analyzer 30 s to 2 min, executor 2 min to 15 min;
   all remain configurable and the executor default must still exceed their sum.

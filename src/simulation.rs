@@ -15,6 +15,76 @@ use std::{
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const MAX_CANDIDATE_FAILURES: u32 = 10;
 const MAX_MEASUREMENT_FAILURES: u32 = 5;
+const VCD_DIR_PREFIX: &str = "numeric-fuzzer-vcd-";
+
+/// Hostname used to attribute per-run VCD directories to a host in shared filesystems.
+fn hostname() -> String {
+    let mut buffer = [0u8; 256];
+    let result =
+        unsafe { libc::gethostname(buffer.as_mut_ptr().cast::<libc::c_char>(), buffer.len()) };
+    if result == 0 {
+        let len = buffer.iter().position(|&byte| byte == 0).unwrap_or(buffer.len());
+        String::from_utf8_lossy(&buffer[..len]).into_owned()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn pid_is_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    // EPERM means the process exists but is owned by someone else; only ESRCH means dead.
+    io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// Removes leftover per-run VCD directories on `parent` that belong to dead processes
+/// of this host (e.g. after the supervisor was SIGKILLed by SLURM or a node crash).
+/// Directories of live processes and of other hosts are never touched. Returns the
+/// number of directories removed.
+fn remove_stale_vcd_dirs(parent: &Path, host: &str, is_alive: impl Fn(i32) -> bool) -> usize {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(rest) = name.strip_prefix(VCD_DIR_PREFIX) else {
+            continue;
+        };
+        // Full name: <prefix><host>-<pid>-<random>; the random suffix contains no dash.
+        let mut parts = rest.rsplitn(3, '-');
+        let (Some(_random), Some(pid), Some(dir_host)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if dir_host != host {
+            continue;
+        }
+        let Ok(pid) = pid.parse::<i32>() else { continue };
+        if is_alive(pid) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            Ok(()) => {
+                removed += 1;
+                tracing::info!("Removed stale VCD directory {}", entry.path().display());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Could not remove stale VCD directory {}: {e}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+    removed
+}
 
 /// Arguments are passed directly, with `{elf}` and `{vcd}` expanded within each argument.
 /// Relative paths are resolved against the fuzzer's starting directory, not `working_dir`.
@@ -121,8 +191,12 @@ impl SimulationBackend {
             .vcd_dir
             .as_deref()
             .unwrap_or(&self.config.working_dir);
+        // Sweep leftovers of dead same-host processes (killed supervisors leak theirs).
+        let host = hostname();
+        remove_stale_vcd_dirs(parent, &host, pid_is_alive);
+        let prefix = format!("{VCD_DIR_PREFIX}{host}-{}-", std::process::id());
         let work = tempfile::Builder::new()
-            .prefix("numeric-fuzzer-vcd-")
+            .prefix(&prefix)
             .tempdir_in(parent)
             .map_err(|e| {
                 EvaluationError::Fatal(format!(
@@ -810,6 +884,45 @@ printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
             SimulationBackend::new(config),
             Err(EvaluationError::Fatal(_))
         ));
+    }
+
+    #[test]
+    fn stale_vcd_directories_of_dead_processes_are_swept() {
+        let fixture = Fixture::new();
+        fixture.success_scripts();
+        let parent = fixture.dir.path();
+        let host = hostname();
+        let own_pid = std::process::id() as i32;
+        let stale = parent.join(format!("{VCD_DIR_PREFIX}{host}-999999-old"));
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("trace.vcd"), b"wave").unwrap();
+        let mine = parent.join(format!("{VCD_DIR_PREFIX}{host}-{own_pid}-mine"));
+        fs::create_dir(&mine).unwrap();
+        let other_host = parent.join(format!("{VCD_DIR_PREFIX}other-host-999999-x"));
+        fs::create_dir(&other_host).unwrap();
+
+        let removed = remove_stale_vcd_dirs(parent, &host, |pid| pid == own_pid);
+        assert_eq!(removed, 1);
+        assert!(!stale.exists());
+        assert!(mine.exists(), "live process directory must be kept");
+        assert!(other_host.exists(), "other host's directory must be kept");
+        fs::remove_dir_all(&mine).unwrap();
+        fs::remove_dir_all(&other_host).unwrap();
+
+        // A full evaluation sweeps too and names its directory with host and pid.
+        let mut backend = SimulationBackend::new(fixture.config()).unwrap();
+        backend.evaluate(&fixture.elf).unwrap();
+        let vcd = fs::read_to_string(parent.join("vcd-path")).unwrap();
+        let dir_name = Path::new(&vcd)
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap();
+        assert!(
+            dir_name.starts_with(&format!("{VCD_DIR_PREFIX}{host}-{own_pid}-")),
+            "{dir_name}"
+        );
+        assert!(!Path::new(&vcd).exists());
     }
 
     #[test]
