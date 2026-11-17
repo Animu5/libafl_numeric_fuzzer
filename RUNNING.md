@@ -171,8 +171,11 @@ An abort may leave a partially flushed VCD: a successful analyzer result does
 not prove the trace includes every cycle. Validate the trace window for the
 specific simulator and workload before comparing scores.
 
-Each evaluation uses a separate supervisor that owns the temporary VCD directory
-and monitors a parent-liveness pipe. On a subprocess timeout, or if the fuzzer
+Each evaluation creates a fresh `numeric-fuzzer-vcd-*` trace directory under `vcd_dir`
+(`--vcd-dir`, TOML `vcd_dir`) if configured, otherwise inside the simulator working
+directory — never the system temp directory, which is often too small for
+multi-gigabyte VCDs. It is removed after analysis. Each evaluation uses a separate
+supervisor that owns the temporary VCD directory and monitors a parent-liveness pipe. On a subprocess timeout, or if the fuzzer
 exits during simulation or analysis, it terminates the active process group,
 reaps the direct child and removes the temporary directory. The supervisor is
 isolated from the fuzzer's terminal process group, so an interrupt to the fuzzer

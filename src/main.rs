@@ -191,6 +191,7 @@ fn main() -> Result<(), Error> {
             analyzer_path,
             target_scope,
             exclude_signal_file,
+            vcd_dir,
             simulator_timeout_ms,
             analyzer_timeout_ms,
         } => {
@@ -203,6 +204,7 @@ fn main() -> Result<(), Error> {
                     analyzer: analyzer_path,
                     target_scope,
                     exclude_signal_file,
+                    vcd_dir,
                     simulator_timeout: Duration::from_millis(simulator_timeout_ms),
                     analyzer_timeout: Duration::from_millis(analyzer_timeout_ms),
                 };
@@ -220,6 +222,7 @@ fn main() -> Result<(), Error> {
                     analyzer_path,
                     target_scope,
                     exclude_signal_file,
+                    vcd_dir,
                     simulator_timeout_ms,
                     analyzer_timeout_ms,
                 );

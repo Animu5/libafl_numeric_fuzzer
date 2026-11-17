@@ -39,6 +39,7 @@ fn parent_process_helper() {
         .arg(dir.join("analyzer"))
         .arg("TOP.dut")
         .arg("")
+        .arg("")
         .args(["30", "0", "30", "0", "{elf}", "{vcd}"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -68,6 +69,7 @@ fn supervisor_returns_metrics_on_success() {
         .arg(path)
         .arg(path.join("analyzer"))
         .arg("TOP.dut")
+        .arg("")
         .arg("")
         .args(["2", "0", "2", "0", "{elf}", "{vcd}"])
         .stdin(Stdio::piped())
@@ -106,6 +108,7 @@ fn supervisor_analyzes_real_chipyard_cycle_limit_when_configured() {
         .arg(dir.path())
         .arg(analyzer)
         .arg("TOP")
+        .arg("")
         .arg("")
         .args(["60", "0", "60", "0"])
         .args([

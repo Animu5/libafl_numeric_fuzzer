@@ -128,6 +128,10 @@ pub struct Args {
     #[arg(long)]
     exclude_signal_file: Option<PathBuf>,
 
+    /// Directory for per-run VCD trace directories (default: the simulator working directory; /tmp is not used)
+    #[arg(long)]
+    vcd_dir: Option<PathBuf>,
+
     /// Simulator timeout in milliseconds (default: 600000)
     #[arg(long)]
     simulator_timeout_ms: Option<u64>,
@@ -202,6 +206,7 @@ pub enum BackendConfig {
         analyzer_path: PathBuf,
         target_scope: String,
         exclude_signal_file: Option<PathBuf>,
+        vcd_dir: Option<PathBuf>,
         simulator_timeout_ms: u64,
         analyzer_timeout_ms: u64,
     },
@@ -330,6 +335,7 @@ impl Args {
                         self.target_scope.or(file.target_scope),
                     )?,
                     exclude_signal_file: self.exclude_signal_file.or(file.exclude_signal_file),
+                    vcd_dir: self.vcd_dir.or(file.vcd_dir),
                     simulator_timeout_ms,
                     analyzer_timeout_ms,
                 }

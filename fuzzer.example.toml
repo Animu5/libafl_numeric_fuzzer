@@ -21,6 +21,7 @@ scope_timeout_ms = 20000
 # Simulation backend only (see fuzzer.simulation.example.toml for these):
 # simulator_path = "/path/to/chipyard/verilator-simulator"
 # simulator_working_dir = "/path/to/chipyard/simulator/working-directory"
+# vcd_dir = "/path/to/large-disk/traces"  # per-run trace dirs (default: simulator_working_dir)
 # simulator_arg = ["+max-cycles=10000000", "+loadmem={elf}", "+vcdfile={vcd}", "{elf}"]
 # analyzer_path = "/path/to/vcdtogglerate"
 # target_scope = "TOP.path.to.target"
