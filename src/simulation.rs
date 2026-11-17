@@ -123,13 +123,22 @@ impl SimulationBackend {
         vcd: &Path,
         cancelled: &AtomicBool,
     ) -> Result<Evaluation, EvaluationError> {
-        let args = self
+        let args: Vec<OsString> = self
             .config
             .simulator_args
             .iter()
-            .map(|arg| expand(arg, elf, vcd));
+            .map(|arg| expand(arg, elf, vcd))
+            .collect();
+        tracing::debug!(
+            "Running simulator {:?} with args {:?} in {:?} (elf={}, vcd={})",
+            self.config.simulator,
+            args,
+            self.config.working_dir,
+            elf.display(),
+            vcd.display()
+        );
         let mut simulator = Command::new(&self.config.simulator);
-        simulator.current_dir(&self.config.working_dir).args(args);
+        simulator.current_dir(&self.config.working_dir).args(&args);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -150,6 +159,13 @@ impl SimulationBackend {
         }
         let output = run_process(&mut simulator, self.config.simulator_timeout, cancelled)
             .map_err(|e| EvaluationError::Fatal(format!("Simulator process: {e}")))?;
+        tracing::debug!(
+            "Simulator exited {} (timed_out={}); VCD {} exists: {}",
+            output.status,
+            output.timed_out,
+            vcd.display(),
+            vcd.is_file()
+        );
         if output.timed_out {
             return Err(EvaluationError::Candidate(format!(
                 "Simulator timed out: {}",
@@ -180,8 +196,23 @@ impl SimulationBackend {
         if let Some(path) = &self.config.exclude_signal_file {
             analyzer.arg("--exclude-signal-file").arg(path);
         }
+        tracing::debug!(
+            "Running analyzer {:?} on VCD {} with target scope {:?} (exclude file: {:?}) in {:?}",
+            self.config.analyzer,
+            vcd.display(),
+            self.config.target_scope,
+            self.config.exclude_signal_file,
+            self.config.working_dir
+        );
         let output = run_process(&mut analyzer, self.config.analyzer_timeout, cancelled)
             .map_err(|e| EvaluationError::Fatal(format!("Analyzer process: {e}")))?;
+        tracing::debug!(
+            "Analyzer exited {} (timed_out={}), stdout {} bytes, stderr {} bytes",
+            output.status,
+            output.timed_out,
+            output.stdout.len(),
+            output.stderr.len()
+        );
         if output.timed_out {
             return Err(EvaluationError::Measurement(format!(
                 "Analyzer timed out: {}",
@@ -241,6 +272,14 @@ impl SimulationBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        tracing::debug!(
+            "Starting simulation supervisor for ELF {} (simulator {:?}, working dir {:?}, analyzer {:?}, args {:?})",
+            elf.display(),
+            self.config.simulator,
+            self.config.working_dir,
+            self.config.analyzer,
+            self.config.simulator_args
+        );
         let mut child = command.spawn().map_err(|e| {
             EvaluationError::Fatal(format!("Cannot start simulation supervisor: {e}"))
         })?;
@@ -252,11 +291,13 @@ impl SimulationBackend {
             EvaluationError::Fatal(format!("Cannot wait for simulation supervisor: {e}"))
         })?;
         let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::debug!(
+            "Simulation supervisor for {} exited {}: {stderr}",
+            elf.display(),
+            output.status
+        );
         match output.status.code() {
             Some(0) => {
-                if !stderr.is_empty() {
-                    tracing::debug!("Simulation supervisor: {stderr}");
-                }
                 let stdout = std::str::from_utf8(&output.stdout).map_err(|e| {
                     EvaluationError::Fatal(format!("Invalid supervisor output: {e}"))
                 })?;
@@ -504,6 +545,16 @@ fn kill_group(group: libc::pid_t) -> io::Result<()> {
 
 /// Entry point for the private child process. Its stdin is a parent-liveness pipe.
 pub fn supervisor_main() -> i32 {
+    // The parent captures this process's stderr, so log there (default debug) to make
+    // failures carry the full simulator and analyzer command lines.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+        )
+        .try_init();
     let cancelled = Arc::new(AtomicBool::new(false));
     let reader_cancelled = Arc::clone(&cancelled);
     thread::spawn(move || {

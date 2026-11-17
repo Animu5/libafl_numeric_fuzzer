@@ -21,6 +21,11 @@ Notable changes are summarized here. Earlier history is available in Git.
 
 ### Changed
 
+- Make skipped-input warnings diagnostic: they now include the input length and a
+  hex preview, the failing build step with its paths, and explicit errors for a
+  missing assembly environment, `src/` directory, or decoder binary; simulation
+  runs log the full simulator and analyzer command lines, including in the
+  supervisor's captured stderr.
 - Move the OpenOCD and oscilloscope workflow behind a hardware evaluation
   backend while retaining the existing hardware measurement sequence.
 - Generalize numeric feedback to distinguish power delta from toggle coverage.
