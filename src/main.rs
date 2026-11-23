@@ -17,8 +17,8 @@ mod parallel;
 #[cfg(feature = "hardware")]
 mod scope;
 mod simulation;
-mod supervisor;
 mod snippet;
+mod supervisor;
 
 use clap::Parser;
 use cli::{Args, BackendConfig, Config, MonitorKind};
@@ -27,8 +27,9 @@ use feedback::{NumericFeedback, Shared};
 #[cfg(feature = "hardware")]
 use hardware::HardwareBackend;
 use harness::Harness;
-use libafl::mutators::{havoc_mutations, HavocScheduledMutator};
+use libafl::mutators::{HavocScheduledMutator, havoc_mutations};
 use libafl::{
+    Error,
     corpus::OnDiskCorpus,
     events::{
         EventConfig, EventFirer, EventReceiver, EventRestarter, Launcher, ProgressReporter,
@@ -38,21 +39,19 @@ use libafl::{
     fuzzer::{Evaluator, Fuzzer, StdFuzzer},
     inputs::BytesInput,
     monitors::{
-        stats::manager::ClientStatsManager, Monitor, NopMonitor, SimplePrintingMonitor,
-        TuiMonitor,
+        Monitor, NopMonitor, SimplePrintingMonitor, TuiMonitor, stats::manager::ClientStatsManager,
     },
     schedulers::QueueScheduler,
     stages::mutational::StdMutationalStage,
     state::StdState,
-    Error,
 };
 use libafl_bolts::{
+    ClientId,
     core_affinity::{Cores, get_core_ids},
     current_nanos,
     rands::StdRand,
     shmem::{ShMemProvider, StdShMemProvider},
     tuples::tuple_list,
-    ClientId,
 };
 #[cfg(feature = "hardware")]
 use measurement::{Measurement, ScopeMeasurement};
@@ -76,7 +75,7 @@ type WorkerState =
     StdState<OnDiskCorpus<BytesInput>, BytesInput, StdRand, OnDiskCorpus<BytesInput>>;
 
 /// Returns an error mapper that prefixes the message with `what`.
-fn context<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
+fn context<E: fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
     move |e| Error::illegal_state(format!("{what}: {e}"))
 }
 
@@ -113,7 +112,10 @@ struct LoggingMonitor {
 
 impl LoggingMonitor {
     fn new(interval: Duration) -> Self {
-        Self { interval, last: None }
+        Self {
+            interval,
+            last: None,
+        }
     }
 }
 
@@ -125,14 +127,23 @@ impl Monitor for LoggingMonitor {
         client_id: ClientId,
     ) -> Result<(), Error> {
         let now = Instant::now();
-        if self.last.is_some_and(|last| now.duration_since(last) < self.interval) {
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < self.interval)
+        {
             return Ok(());
         }
         self.last = Some(now);
-        let Ok(client) = stats.get(client_id) else { return Ok(()) };
+        let Ok(client) = stats.get(client_id) else {
+            return Ok(());
+        };
         let elapsed = client.start_time();
         let execs = client.executions();
-        let execs_per_sec = if elapsed.is_zero() { 0.0 } else { execs as f64 / elapsed.as_secs_f64() };
+        let execs_per_sec = if elapsed.is_zero() {
+            0.0
+        } else {
+            execs as f64 / elapsed.as_secs_f64()
+        };
         tracing::info!(
             "[{name}] execs={execs} ({execs_per_sec:.0}/s), corpus={}, objectives={}, \
              last new corpus {:?} ago, last objective {:?} ago",
@@ -204,7 +215,7 @@ fn load_seeds(path: Option<&Path>) -> Result<Vec<BytesInput>, Error> {
 }
 
 /// Builds the progress monitor selected by `kind`.
-fn create_monitor(kind: MonitorKind) -> Box<dyn libafl::monitors::Monitor> {
+fn create_monitor(kind: MonitorKind) -> Box<dyn Monitor> {
     match kind {
         MonitorKind::Tui => Box::new(
             TuiMonitor::builder()
@@ -276,14 +287,20 @@ fn launch_parallel(config: Config) -> Result<(), Error> {
         .expect("worker_dirs checked by caller");
 
     let exchange = config.solutions_path.join("parallel-exchange");
-    if exchange.try_exists().map_err(context("Checking exchange directory"))? {
+    if exchange
+        .try_exists()
+        .map_err(context("Checking exchange directory"))?
+    {
         return Err(Error::illegal_state(format!(
             "Exchange already exists: {}",
             exchange.display()
         )));
     }
     if let Some(workspace) = &config.worker_workspace {
-        if workspace.try_exists().map_err(context("Checking worker workspace"))? {
+        if workspace
+            .try_exists()
+            .map_err(context("Checking worker workspace"))?
+        {
             return Err(Error::illegal_state(format!(
                 "Worker workspace already exists: {}",
                 workspace.display()

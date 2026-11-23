@@ -110,7 +110,7 @@ pub fn parse_toggle_metrics(stdout: &str) -> Result<Evaluation, EvaluationError>
             _ => {
                 return Err(EvaluationError::Measurement(format!(
                     "unexpected analyzer output key: {key:?}"
-                )))
+                )));
             }
         };
         if slot.is_some() {

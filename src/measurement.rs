@@ -124,17 +124,23 @@ mod tests {
 
     #[test]
     fn measurement_error_messages_are_descriptive() {
-        assert!(MeasurementError::Scope(ScopeError::Read(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "timeout"
-        )))
-        .to_string()
-        .contains("timeout"));
-        assert!(MeasurementError::InvalidReading("N/A".into())
+        assert!(
+            MeasurementError::Scope(ScopeError::Read(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timeout"
+            )))
             .to_string()
-            .contains("N/A"));
-        assert!(MeasurementError::NonFiniteReading(f64::NAN)
-            .to_string()
-            .contains("non-finite"));
+            .contains("timeout")
+        );
+        assert!(
+            MeasurementError::InvalidReading("N/A".into())
+                .to_string()
+                .contains("N/A")
+        );
+        assert!(
+            MeasurementError::NonFiniteReading(f64::NAN)
+                .to_string()
+                .contains("non-finite")
+        );
     }
 }

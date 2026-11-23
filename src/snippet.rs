@@ -387,12 +387,16 @@ mod tests {
         let mut b = b.with_archive(archive.clone()).unwrap();
         b.build(b"one").unwrap();
         b.build(b"two").unwrap();
-        assert!(std::fs::read_to_string(archive.join("000001.S"))
-            .unwrap()
-            .contains("one"));
-        assert!(std::fs::read_to_string(archive.join("000002.S"))
-            .unwrap()
-            .contains("two"));
+        assert!(
+            std::fs::read_to_string(archive.join("000001.S"))
+                .unwrap()
+                .contains("one")
+        );
+        assert!(
+            std::fs::read_to_string(archive.join("000002.S"))
+                .unwrap()
+                .contains("two")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

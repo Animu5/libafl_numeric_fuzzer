@@ -648,19 +648,22 @@ mod tests {
         assert!(args.merge(Args::default()).unwrap_err().contains("sum"));
         let mut args = simulation();
         args.target_scope = Some(" ".into());
-        assert!(args
-            .merge(Args::default())
-            .unwrap_err()
-            .contains("target-scope"));
+        assert!(
+            args.merge(Args::default())
+                .unwrap_err()
+                .contains("target-scope")
+        );
     }
 
     #[cfg(not(feature = "hardware"))]
     #[test]
     fn hardware_without_feature_is_rejected() {
-        assert!(common()
-            .merge(Args::default())
-            .unwrap_err()
-            .contains("hardware feature"));
+        assert!(
+            common()
+                .merge(Args::default())
+                .unwrap_err()
+                .contains("hardware feature")
+        );
     }
 
     #[test]

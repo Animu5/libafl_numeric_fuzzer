@@ -224,10 +224,12 @@ mod tests {
         fs::create_dir(&template).unwrap();
         symlink("/tmp", template.join("shared")).unwrap();
         let root = temp.path().join("workspace");
-        assert!(prepare_workspace(&root, &template, &dirs(&root, 1))
-            .unwrap_err()
-            .to_string()
-            .contains("symlink"));
+        assert!(
+            prepare_workspace(&root, &template, &dirs(&root, 1))
+                .unwrap_err()
+                .to_string()
+                .contains("symlink")
+        );
     }
 
     #[test]

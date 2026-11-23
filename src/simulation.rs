@@ -1,4 +1,5 @@
-use crate::evaluation::{parse_toggle_metrics, Evaluation, EvaluationBackend, EvaluationError};
+use crate::evaluation::{Evaluation, EvaluationBackend, EvaluationError, parse_toggle_metrics};
+#[allow(unused_imports)]
 use std::{
     ffi::{OsStr, OsString},
     io,
@@ -44,7 +45,11 @@ pub(crate) fn pid_is_alive(pid: i32) -> bool {
 /// of this host (e.g. after the supervisor was SIGKILLed by SLURM or a node crash).
 /// Directories of live processes and of other hosts are never touched. Returns the
 /// number of directories removed.
-pub(crate) fn remove_stale_vcd_dirs(parent: &Path, host: &str, is_alive: impl Fn(i32) -> bool) -> usize {
+pub(crate) fn remove_stale_vcd_dirs(
+    parent: &Path,
+    host: &str,
+    is_alive: impl Fn(i32) -> bool,
+) -> usize {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return 0;
     };
@@ -256,8 +261,12 @@ impl SimulationBackend {
                 });
             }
         }
-        let output = crate::supervisor::run_process(&mut simulator, self.config.simulator_timeout, cancelled)
-            .map_err(|e| EvaluationError::Fatal(format!("Simulator process: {e}")))?;
+        let output = crate::supervisor::run_process(
+            &mut simulator,
+            self.config.simulator_timeout,
+            cancelled,
+        )
+        .map_err(|e| EvaluationError::Fatal(format!("Simulator process: {e}")))?;
         tracing::debug!(
             "Simulator exited {} (timed_out={}); VCD {} exists: {}",
             output.status,
@@ -304,8 +313,9 @@ impl SimulationBackend {
             self.config.exclude_signal_file,
             self.config.working_dir
         );
-        let output = crate::supervisor::run_process(&mut analyzer, self.config.analyzer_timeout, cancelled)
-            .map_err(|e| EvaluationError::Fatal(format!("Analyzer process: {e}")))?;
+        let output =
+            crate::supervisor::run_process(&mut analyzer, self.config.analyzer_timeout, cancelled)
+                .map_err(|e| EvaluationError::Fatal(format!("Analyzer process: {e}")))?;
         tracing::debug!(
             "Analyzer exited {} (timed_out={}), stdout {} bytes, stderr {} bytes",
             output.status,
@@ -492,7 +502,6 @@ pub(crate) fn expand(arg: &OsStr, elf: &Path, vcd: &Path) -> OsString {
     }
     OsString::from_vec(result)
 }
-
 
 #[cfg(all(test, unix))]
 mod tests {

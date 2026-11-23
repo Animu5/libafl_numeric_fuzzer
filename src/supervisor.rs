@@ -3,16 +3,14 @@
 //! Spawned by `SimulationBackend::run` via `--internal-simulation-supervisor`.
 
 use crate::evaluation::{Evaluation, EvaluationError};
-use crate::simulation::{
-    SimulationBackend, SimulationConfig, OUTPUT_LIMIT,
-};
+use crate::simulation::{OUTPUT_LIMIT, SimulationBackend, SimulationConfig};
 use std::{
     io::{self, Read},
     path::PathBuf,
     process::{Command, ExitStatus, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -174,7 +172,7 @@ pub fn supervisor_main() -> i32 {
     // The parent captures this process's stderr, so log there (default debug) to make
     // failures carry the full simulator and analyzer command lines.
     let _ = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(io::stderr)
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -274,4 +272,3 @@ fn supervisor_evaluate(cancelled: &AtomicBool) -> Result<Evaluation, EvaluationE
     };
     SimulationBackend::new(config)?.run_direct(&elf, cancelled)
 }
-

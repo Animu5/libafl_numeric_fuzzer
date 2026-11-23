@@ -1,9 +1,9 @@
 use crate::evaluation::{Evaluation, Metric};
 use libafl::{
+    Error,
     corpus::Testcase,
     executors::ExitKind,
     feedbacks::{Feedback, StateInitializer},
-    Error,
 };
 use libafl_bolts::Named;
 use std::{
