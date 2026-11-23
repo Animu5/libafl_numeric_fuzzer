@@ -5,21 +5,19 @@ compile_error!("libafl_fuzzer only supports Unix platforms");
 
 mod cli;
 mod evaluation;
-mod global_best;
 mod feedback;
 #[cfg(feature = "hardware")]
 mod hardware;
 mod harness;
-mod logging;
 #[cfg(feature = "hardware")]
 mod measurement;
-mod monitor;
 #[cfg(feature = "hardware")]
 mod openocd;
 mod parallel;
 #[cfg(feature = "hardware")]
 mod scope;
 mod simulation;
+mod supervisor;
 mod snippet;
 
 use clap::Parser;
@@ -39,7 +37,10 @@ use libafl::{
     executors::InProcessExecutor,
     fuzzer::{Evaluator, Fuzzer, StdFuzzer},
     inputs::BytesInput,
-    monitors::{NopMonitor, SimplePrintingMonitor, TuiMonitor},
+    monitors::{
+        stats::manager::ClientStatsManager, Monitor, NopMonitor, SimplePrintingMonitor,
+        TuiMonitor,
+    },
     schedulers::QueueScheduler,
     stages::mutational::StdMutationalStage,
     state::StdState,
@@ -51,16 +52,24 @@ use libafl_bolts::{
     rands::StdRand,
     shmem::{ShMemProvider, StdShMemProvider},
     tuples::tuple_list,
+    ClientId,
 };
 #[cfg(feature = "hardware")]
 use measurement::{Measurement, ScopeMeasurement};
-use monitor::{DynMonitor, LoggingMonitor};
+
 #[cfg(feature = "hardware")]
 use openocd::OpenOcd;
 #[cfg(feature = "hardware")]
 use scope::Scope;
 use snippet::SnippetBuilder;
-use std::{path::Path, rc::Rc, time::Duration};
+use std::{
+    fmt, io,
+    path::Path,
+    rc::Rc,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+use tracing_subscriber::EnvFilter;
 
 /// The concrete LibAFL state used by every worker.
 type WorkerState =
@@ -69,6 +78,91 @@ type WorkerState =
 /// Returns an error mapper that prefixes the message with `what`.
 fn context<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
     move |e| Error::illegal_state(format!("{what}: {e}"))
+}
+
+/// Logs to `path`, truncating any existing file. The writer is unbuffered so nothing is lost
+/// if a crash handler kills the process. The filter comes from `level` if given, else from
+/// `RUST_LOG`, else `info`. LibAFL logs through the `log` crate; the `tracing-log` feature
+/// bridges those records into tracing so they land in the same file.
+fn init_logging(path: &Path, level: Option<&str>) -> io::Result<()> {
+    let file = std::fs::File::create(path)?;
+    let filter = match level {
+        Some(level) => EnvFilter::try_new(level).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Invalid log level or filter {level:?}: {e}"),
+            )
+        })?,
+        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    };
+    tracing_subscriber::fmt()
+        .with_writer(Mutex::new(file))
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .init();
+    Ok(())
+}
+
+/// A headless monitor that writes periodic fuzzer statistics into the log file
+/// via `tracing`, for runs without a terminal.
+#[derive(Debug)]
+struct LoggingMonitor {
+    interval: Duration,
+    last: Option<Instant>,
+}
+
+impl LoggingMonitor {
+    fn new(interval: Duration) -> Self {
+        Self { interval, last: None }
+    }
+}
+
+impl Monitor for LoggingMonitor {
+    fn display(
+        &mut self,
+        stats: &mut ClientStatsManager,
+        name: &str,
+        client_id: ClientId,
+    ) -> Result<(), Error> {
+        let now = Instant::now();
+        if self.last.is_some_and(|last| now.duration_since(last) < self.interval) {
+            return Ok(());
+        }
+        self.last = Some(now);
+        let Ok(client) = stats.get(client_id) else { return Ok(()) };
+        let elapsed = client.start_time();
+        let execs = client.executions();
+        let execs_per_sec = if elapsed.is_zero() { 0.0 } else { execs as f64 / elapsed.as_secs_f64() };
+        tracing::info!(
+            "[{name}] execs={execs} ({execs_per_sec:.0}/s), corpus={}, objectives={}, \
+             last new corpus {:?} ago, last objective {:?} ago",
+            client.corpus_size(),
+            client.objective_size(),
+            client.last_corpus_time(),
+            client.last_objective_time(),
+        );
+        Ok(())
+    }
+}
+
+/// Boxes any monitor behind one type so the CLI can select it at runtime.
+struct DynMonitor(Box<dyn Monitor>);
+
+impl fmt::Debug for DynMonitor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DynMonitor")
+    }
+}
+
+impl Monitor for DynMonitor {
+    fn display(
+        &mut self,
+        stats: &mut ClientStatsManager,
+        name: &str,
+        client_id: ClientId,
+    ) -> Result<(), Error> {
+        self.0.display(stats, name, client_id)
+    }
 }
 
 /// Loads the seed file or every regular non-hidden file in the seed directory (sorted by name).
@@ -129,7 +223,7 @@ fn main() -> Result<(), Error> {
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new("--internal-simulation-supervisor"))
     {
-        std::process::exit(simulation::supervisor_main());
+        std::process::exit(supervisor::supervisor_main());
     }
     let args = Args::parse();
 
@@ -150,7 +244,7 @@ fn main() -> Result<(), Error> {
 
     // Initialize logging before any forking so the broker and all workers share
     // the same log file (central logging via fork-inherited file descriptor).
-    logging::init(&config.log_file, config.log_level.as_deref())
+    init_logging(&config.log_file, config.log_level.as_deref())
         .map_err(context("Could not initialize logging"))?;
 
     if config.worker_dirs.is_some() {
@@ -198,7 +292,7 @@ fn launch_parallel(config: Config) -> Result<(), Error> {
         parallel::prepare_workspace(workspace, &config.assembly_environment, workers)
             .map_err(context("Preparing worker workspace"))?;
     }
-    global_best::prepare(&config.solutions_path, workers.len())
+    parallel::prepare_exchange(&config.solutions_path, workers.len())
         .map_err(context("Preparing input exchange"))?;
 
     // CPU cores: use the process affinity mask (respects SLURM --cpus-per-task),

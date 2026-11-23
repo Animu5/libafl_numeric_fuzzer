@@ -1,24 +1,20 @@
 use crate::evaluation::{parse_toggle_metrics, Evaluation, EvaluationBackend, EvaluationError};
 use std::{
     ffi::{OsStr, OsString},
-    io::{self, Read},
+    io,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    thread,
-    time::{Duration, Instant},
+    process::{Command, Stdio},
+    sync::atomic::AtomicBool,
+    time::Duration,
 };
 
-const OUTPUT_LIMIT: usize = 64 * 1024;
-const MAX_CANDIDATE_FAILURES: u32 = 10;
-const MAX_MEASUREMENT_FAILURES: u32 = 5;
-const VCD_DIR_PREFIX: &str = "numeric-fuzzer-vcd-";
+pub(crate) const OUTPUT_LIMIT: usize = 64 * 1024;
+pub(crate) const MAX_CANDIDATE_FAILURES: u32 = 10;
+pub(crate) const MAX_MEASUREMENT_FAILURES: u32 = 5;
+pub(crate) const VCD_DIR_PREFIX: &str = "numeric-fuzzer-vcd-";
 
 /// Hostname used to attribute per-run VCD directories to a host in shared filesystems.
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     let mut buffer = [0u8; 256];
     let result =
         unsafe { libc::gethostname(buffer.as_mut_ptr().cast::<libc::c_char>(), buffer.len()) };
@@ -33,7 +29,7 @@ fn hostname() -> String {
     }
 }
 
-fn pid_is_alive(pid: i32) -> bool {
+pub(crate) fn pid_is_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
@@ -48,7 +44,7 @@ fn pid_is_alive(pid: i32) -> bool {
 /// of this host (e.g. after the supervisor was SIGKILLed by SLURM or a node crash).
 /// Directories of live processes and of other hosts are never touched. Returns the
 /// number of directories removed.
-fn remove_stale_vcd_dirs(parent: &Path, host: &str, is_alive: impl Fn(i32) -> bool) -> usize {
+pub(crate) fn remove_stale_vcd_dirs(parent: &Path, host: &str, is_alive: impl Fn(i32) -> bool) -> usize {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return 0;
     };
@@ -179,7 +175,7 @@ impl SimulationBackend {
         })
     }
 
-    fn run_direct(
+    pub(crate) fn run_direct(
         &self,
         elf: &Path,
         cancelled: &AtomicBool,
@@ -260,7 +256,7 @@ impl SimulationBackend {
                 });
             }
         }
-        let output = run_process(&mut simulator, self.config.simulator_timeout, cancelled)
+        let output = crate::supervisor::run_process(&mut simulator, self.config.simulator_timeout, cancelled)
             .map_err(|e| EvaluationError::Fatal(format!("Simulator process: {e}")))?;
         tracing::debug!(
             "Simulator exited {} (timed_out={}); VCD {} exists: {}",
@@ -308,7 +304,7 @@ impl SimulationBackend {
             self.config.exclude_signal_file,
             self.config.working_dir
         );
-        let output = run_process(&mut analyzer, self.config.analyzer_timeout, cancelled)
+        let output = crate::supervisor::run_process(&mut analyzer, self.config.analyzer_timeout, cancelled)
             .map_err(|e| EvaluationError::Fatal(format!("Analyzer process: {e}")))?;
         tracing::debug!(
             "Analyzer exited {} (timed_out={}), stdout {} bytes, stderr {} bytes",
@@ -463,7 +459,7 @@ impl EvaluationBackend for SimulationBackend {
     }
 }
 
-fn absolute(cwd: &Path, path: &Path) -> PathBuf {
+pub(crate) fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_owned()
     } else {
@@ -471,14 +467,14 @@ fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn contains(arg: &OsStr, needle: &[u8]) -> bool {
+pub(crate) fn contains(arg: &OsStr, needle: &[u8]) -> bool {
     use std::os::unix::ffi::OsStrExt;
     arg.as_bytes()
         .windows(needle.len())
         .any(|part| part == needle)
 }
 
-fn expand(arg: &OsStr, elf: &Path, vcd: &Path) -> OsString {
+pub(crate) fn expand(arg: &OsStr, elf: &Path, vcd: &Path) -> OsString {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let mut result = Vec::new();
     let mut remaining = arg.as_bytes();
@@ -497,267 +493,11 @@ fn expand(arg: &OsStr, elf: &Path, vcd: &Path) -> OsString {
     OsString::from_vec(result)
 }
 
-struct ProcessOutput {
-    status: ExitStatus,
-    timed_out: bool,
-    stdout: Vec<u8>,
-    stdout_truncated: bool,
-    stderr: Vec<u8>,
-}
-
-impl ProcessOutput {
-    fn diagnostic(&self) -> String {
-        format!(
-            "stderr: {:?}; stdout: {:?}",
-            String::from_utf8_lossy(&self.stderr),
-            String::from_utf8_lossy(&self.stdout)
-        )
-    }
-
-    fn chipyard_cycle_limit(&self) -> bool {
-        use std::os::unix::process::ExitStatusExt;
-        if self.status.code() != Some(255) && self.status.signal() != Some(libc::SIGABRT) {
-            return false;
-        }
-        String::from_utf8_lossy(&self.stderr).lines().any(|line| {
-            let Some(rest) = line.strip_prefix("*** FAILED ***") else {
-                return false;
-            };
-            let Some(cycles) = rest.trim().strip_prefix("(timeout) after") else {
-                return false;
-            };
-            let Some(cycles) = cycles.trim().strip_suffix(" simulation cycles") else {
-                return false;
-            };
-            !cycles.is_empty() && cycles.bytes().all(|byte| byte.is_ascii_digit())
-        })
-    }
-}
-
-fn read_bounded(mut reader: impl Read) -> io::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::new();
-    let mut truncated = false;
-    let mut buffer = [0; 8192];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        let keep = count.min(OUTPUT_LIMIT.saturating_sub(output.len()));
-        output.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < count;
-    }
-    Ok((output, truncated))
-}
-
-fn read_bounded_tail(mut reader: impl Read) -> io::Result<Vec<u8>> {
-    let mut output = Vec::new();
-    let mut buffer = [0; 8192];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            return Ok(output);
-        }
-        let excess = (output.len() + count).saturating_sub(OUTPUT_LIMIT);
-        if excess != 0 {
-            output.drain(..excess);
-        }
-        output.extend_from_slice(&buffer[..count]);
-    }
-}
-
-fn run_process(
-    command: &mut Command,
-    timeout: Duration,
-    cancelled: &AtomicBool,
-) -> io::Result<ProcessOutput> {
-    use std::os::unix::process::CommandExt;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    if cancelled.load(Ordering::Acquire) {
-        return Err(io::Error::other("Fuzzer process exited"));
-    }
-    let mut child = command.spawn()?;
-    let group = child.id() as libc::pid_t;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let out_thread = thread::spawn(move || read_bounded(stdout));
-    let err_thread = thread::spawn(move || read_bounded_tail(stderr));
-    let start = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if cancelled.load(Ordering::Acquire) => {
-                let killed = kill_group(group);
-                let waited = child.wait();
-                break killed
-                    .and(waited)
-                    .and_then(|_| Err(io::Error::other("Fuzzer process exited")));
-            }
-            Ok(None) if start.elapsed() < timeout => thread::sleep(
-                Duration::from_millis(10).min(timeout.saturating_sub(start.elapsed())),
-            ),
-            Ok(None) => {
-                timed_out = true;
-                break kill_group(group).and_then(|()| child.wait());
-            }
-            Err(e) => {
-                let _ = kill_group(group);
-                let _ = child.wait();
-                break Err(e);
-            }
-        }
-    };
-    // Close inherited pipes even if a successful leader left child processes behind.
-    let cleanup = kill_group(group);
-    let stdout = out_thread
-        .join()
-        .map_err(|_| io::Error::other("stdout reader panicked"))?;
-    let stderr = err_thread
-        .join()
-        .map_err(|_| io::Error::other("stderr reader panicked"))?;
-    let status = status?;
-    cleanup?;
-    let (stdout, stdout_truncated) = stdout?;
-    let stderr = stderr?;
-    Ok(ProcessOutput {
-        status,
-        timed_out,
-        stdout,
-        stdout_truncated,
-        stderr,
-    })
-}
-
-fn kill_group(group: libc::pid_t) -> io::Result<()> {
-    // The child owns a separate process group; negative PID addresses that group only.
-    let result = unsafe { libc::kill(-group, libc::SIGKILL) };
-    if result == 0 {
-        return Ok(());
-    }
-
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(error)
-    }
-}
-
-/// Entry point for the private child process. Its stdin is a parent-liveness pipe.
-pub fn supervisor_main() -> i32 {
-    // The parent captures this process's stderr, so log there (default debug) to make
-    // failures carry the full simulator and analyzer command lines.
-    let _ = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
-        )
-        .try_init();
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let reader_cancelled = Arc::clone(&cancelled);
-    thread::spawn(move || {
-        let mut stdin = io::stdin().lock();
-        let mut buffer = [0; 128];
-        loop {
-            match stdin.read(&mut buffer) {
-                Ok(0) | Err(_) => {
-                    reader_cancelled.store(true, Ordering::Release);
-                    break;
-                }
-                Ok(_) => {}
-            }
-        }
-    });
-
-    match supervisor_evaluate(&cancelled) {
-        Ok(result) => {
-            println!(
-                "toggle_activity={}",
-                result
-                    .toggle_activity_per_second()
-                    .expect("coverage has activity")
-            );
-            println!("toggle_coverage={}", result.score());
-            0
-        }
-        Err(EvaluationError::Candidate(message)) => {
-            eprintln!("{message}");
-            10
-        }
-        Err(EvaluationError::Measurement(message)) => {
-            eprintln!("{message}");
-            11
-        }
-        Err(EvaluationError::Fatal(message)) => {
-            eprintln!("{message}");
-            12
-        }
-    }
-}
-
-fn supervisor_evaluate(cancelled: &AtomicBool) -> Result<Evaluation, EvaluationError> {
-    let mut args = std::env::args_os().skip(2);
-    let mut next = |name| {
-        args.next()
-            .ok_or_else(|| EvaluationError::Fatal(format!("Missing supervisor argument: {name}")))
-    };
-    let elf = PathBuf::from(next("ELF")?);
-    let simulator = PathBuf::from(next("simulator")?);
-    let working_dir = PathBuf::from(next("working directory")?);
-    let analyzer = PathBuf::from(next("analyzer")?);
-    let target_scope = next("target scope")?
-        .into_string()
-        .map_err(|_| EvaluationError::Fatal("Target scope is not UTF-8".into()))?;
-    let exclusion = PathBuf::from(next("exclusions")?);
-    let vcd_dir = PathBuf::from(next("vcd directory")?);
-    let mut number = |name| -> Result<u64, EvaluationError> {
-        next(name)?
-            .to_str()
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| EvaluationError::Fatal(format!("Invalid supervisor argument: {name}")))
-    };
-    let sim_secs = number("simulator timeout seconds")?;
-    let sim_nanos = number("simulator timeout nanoseconds")?;
-    let analyzer_secs = number("analyzer timeout seconds")?;
-    let analyzer_nanos = number("analyzer timeout nanoseconds")?;
-    if sim_nanos >= 1_000_000_000 || analyzer_nanos >= 1_000_000_000 {
-        return Err(EvaluationError::Fatal(
-            "Invalid supervisor timeout nanoseconds".into(),
-        ));
-    }
-    let config = SimulationConfig {
-        simulator,
-        simulator_args: args.collect(),
-        working_dir,
-        analyzer,
-        target_scope,
-        exclude_signal_file: if exclusion.as_os_str().is_empty() {
-            None
-        } else {
-            Some(exclusion)
-        },
-        vcd_dir: if vcd_dir.as_os_str().is_empty() {
-            None
-        } else {
-            Some(vcd_dir)
-        },
-        simulator_timeout: Duration::new(sim_secs, sim_nanos as u32),
-        analyzer_timeout: Duration::new(analyzer_secs, analyzer_nanos as u32),
-    };
-    SimulationBackend::new(config)?.run_direct(&elf, cancelled)
-}
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, time::Instant};
 
     static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
