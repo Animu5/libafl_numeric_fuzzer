@@ -40,8 +40,11 @@ analyzer_timeout_ms = 120000
 # Must exceed both timeouts combined, plus time to build each ELF.
 exec_timeout_ms = 900000
 
-# Optional parallel workers. The parent of the fresh workspace must exist.
-# The workspace itself and solutions_path/parallel-exchange must not exist.
+# Optional parallel workers on a single node (LibAFL Launcher + LLMP shared memory).
+# Workers are forked and pinned to cores from the process affinity mask (SLURM
+# --cpus-per-task); they exchange inputs instantly over shared memory.
+# The parent of the fresh workspace must exist; the workspace itself and
+# solutions_path/parallel-exchange must not exist.
 # workers = 2
 # worker_workspace = "/path/to/new-worker-workspace"
 # Alternatively, provide pre-existing isolated directories explicitly:

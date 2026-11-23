@@ -26,9 +26,11 @@ For the default hardware backend it then:
 The simulation backend instead runs the ELF in the supplied simulator, analyzes
 its VCD, and maximizes toggle coverage while logging toggle activity. See
 `fuzzer.simulation.example.toml` and `RUNNING.md` for configuration.
-Parallel simulation workers can automatically copy a build template into isolated
-workspaces. Workers exchange locally interesting inputs and maintain separate
-corpora alongside a shared global best; see `RUNNING.md`.
+Parallel simulation workers run on a single node via LibAFL's `Launcher` with LLMP
+shared-memory IPC: workers are forked and pinned to cores, exchange interesting
+inputs instantly over shared memory, and are restarted automatically on crash.
+A build template is copied into isolated per-worker workspaces; each worker keeps
+its own corpus alongside a shared global best; see `RUNNING.md`.
 
 Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
