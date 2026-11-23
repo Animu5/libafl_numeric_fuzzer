@@ -477,9 +477,8 @@ impl Config {
         self.global_best = Some((self.solutions_path.join("parallel-exchange"), index));
         self.solutions_path = self.solutions_path.join(&name);
         self.snippet_dir = self.snippet_dir.take().map(|dir| dir.join(&name));
-        let mut log = self.log_file.as_os_str().to_os_string();
-        log.push(format!(".{name}"));
-        self.log_file = log.into();
+        // Logging is initialized once in the broker before forking, so all
+        // workers share the central log file; log_file is intentionally untouched.
         Ok(())
     }
 }
@@ -625,7 +624,8 @@ mod tests {
         config.select_worker(1).unwrap();
         assert_eq!(config.assembly_environment, b.canonicalize().unwrap());
         assert!(config.solutions_path.ends_with("worker-0001"));
-        assert!(config.log_file.to_string_lossy().ends_with(".worker-0001"));
+        // Central logging: the log file stays shared, no per-worker suffix.
+        assert!(!config.log_file.to_string_lossy().contains("worker-"));
         assert!(config.worker_dirs.is_none());
 
         let mut args = simulation();

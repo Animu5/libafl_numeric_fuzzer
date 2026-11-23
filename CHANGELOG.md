@@ -27,10 +27,12 @@ Notable changes are summarized here. Earlier history is available in Git.
   now exchanges `NewTestcase` events between workers via shared memory, with no
   polling delay. `parallel-exchange/` now only holds `global-best.txt` and the
   best input/assembly files for persistence.
-- `src/parallel.rs` is reduced to workspace setup (`prepare_workspace`); the
-  custom process launcher, stdin liveness watch, and process-group kill are gone.
-  `src/exchange.rs` is renamed to `src/global_best.rs` and reduced to directory
-  setup plus `update_global_best`.
+- `src/parallel.rs` now holds workspace setup (`prepare_workspace`) plus the
+  global-best tracking (`prepare_exchange`, `update_global_best`); the custom
+  process launcher, stdin liveness watch, and process-group kill are gone.
+- `select_worker` no longer appends a `.worker-NNNN` suffix to the log file:
+  logging is initialized once in the broker before forking, so the mutation
+  was dead code and all workers share the one central log file.
 - `--worker-index`, `--internal-worker-index`, and `--internal-launcher-child`
   are removed; the Launcher assigns worker IDs via `ClientDescription`.
 - `slurm-fuzzing.example.sbatch` now uses the single-task pattern
@@ -42,6 +44,13 @@ Notable changes are summarized here. Earlier history is available in Git.
   SLURM-array and launcher-death tests are gone). The broker port can be set
   via the `LLMP_BROKER_PORT` env var (default 1337), which tests use to avoid
   port conflicts.
+
+### Fixed
+
+- Defuse a flaky launcher integration test: it now waits for all worker
+  artifacts (both `best.S` files and both built ELFs) instead of stopping at
+  the first global-best update, which worker-0001 could reach before
+  worker-0000 had written its own best.
 
 ### Added
 

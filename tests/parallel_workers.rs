@@ -86,15 +86,22 @@ printf 'toggle_activity=12\ntoggle_coverage=%s\n' "$c"
         .unwrap();
     let start = Instant::now();
     let global = solutions.join("parallel-exchange/global-best.txt");
-    while !fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n"))
-        && start.elapsed() < Duration::from_secs(20)
-    {
+    // Wait for all artifacts, not just the global best: worker-0000 may lag
+    // behind worker-0001, which can report the 0.75 global best first.
+    let ready = || {
+        fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n"))
+            && workspace.join("worker-0000/build/snippet.elf").is_file()
+            && workspace.join("worker-0001/build/snippet.elf").is_file()
+            && solutions.join("worker-0000/best.S").is_file()
+            && solutions.join("worker-0001/best.S").is_file()
+    };
+    while !ready() && start.elapsed() < Duration::from_secs(60) {
         if child.try_wait().unwrap().is_some() {
             break;
         }
         thread::sleep(Duration::from_millis(20));
     }
-    let success = fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n"));
+    let success = ready();
     if child.try_wait().unwrap().is_none() {
         child.kill().unwrap();
     }
