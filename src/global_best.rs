@@ -23,15 +23,6 @@ pub fn prepare(solutions: &Path, workers: usize) -> io::Result<()> {
     Ok(())
 }
 
-/// Idempotently creates the exchange root and all per-worker directories.
-pub fn ensure(root: &Path, workers: usize) -> io::Result<()> {
-    fs::create_dir_all(root)?;
-    for index in 0..workers {
-        fs::create_dir_all(root.join(format!("worker-{index:04}")))?;
-    }
-    Ok(())
-}
-
 /// Updates the shared global-best record if `evaluation` beats the current best.
 /// Saves the input and assembly under `root/worker-NNNN/` and atomically replaces
 /// `root/global-best.txt` under an exclusive flock. Input exchange between workers
@@ -174,12 +165,11 @@ mod tests {
     }
 
     #[test]
-    fn ensure_creates_the_exchange_idempotently() {
+    fn prepare_creates_worker_directories() {
         let temp = tempfile::tempdir().unwrap();
+        prepare(temp.path(), 3).unwrap();
         let root = temp.path().join("parallel-exchange");
-        ensure(&root, 3).unwrap();
         assert!(root.join("worker-0000").is_dir());
         assert!(root.join("worker-0002").is_dir());
-        ensure(&root, 3).unwrap();
     }
 }

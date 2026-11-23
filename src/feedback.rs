@@ -121,7 +121,7 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
                         let assembly = self.last_assembly.as_deref().ok_or_else(|| {
                             Error::illegal_state("No assembly for measured parallel input")
                         })?;
-                        crate::exchange::update_global_best(
+                        crate::global_best::update_global_best(
                             root,
                             *worker,
                             &self.shared.input.borrow(),

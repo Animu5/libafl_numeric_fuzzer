@@ -5,7 +5,7 @@ compile_error!("libafl_fuzzer only supports Unix platforms");
 
 mod cli;
 mod evaluation;
-mod exchange;
+mod global_best;
 mod feedback;
 #[cfg(feature = "hardware")]
 mod hardware;
@@ -189,7 +189,7 @@ fn launch_parallel(config: Config) -> Result<(), Error> {
         parallel::prepare_workspace(workspace, &config.assembly_environment, workers)
             .map_err(context("Preparing worker workspace"))?;
     }
-    exchange::prepare(&config.solutions_path, workers.len())
+    global_best::prepare(&config.solutions_path, workers.len())
         .map_err(context("Preparing input exchange"))?;
 
     // CPU cores: use the process affinity mask (respects SLURM --cpus-per-task),

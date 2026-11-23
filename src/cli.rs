@@ -484,12 +484,8 @@ impl Config {
             .take()
             .ok_or("Worker index requires parallel configuration")?;
         let worker = dirs.get(index).ok_or("Worker index out of range")?;
-        if self.worker_workspace.is_some() {
-            // Standalone worker (e.g. a SLURM array task, no launcher): prepare only this
-            // worker's directories. When the launcher spawned us, they already exist.
-            crate::parallel::ensure_worker_dirs(&self.assembly_environment, worker)
-                .map_err(|e| format!("Cannot prepare worker workspace: {e}"))?;
-        }
+        // The workspace was already prepared by prepare_workspace in the parent
+        // (launcher mode); each forked child just selects its own directories.
         self.assembly_environment = worker.assembly.clone();
         match &mut self.backend {
             BackendConfig::Simulation {

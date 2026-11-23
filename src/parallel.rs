@@ -1,131 +1,14 @@
+//! Worker workspace setup for parallel fuzzing. The actual process spawning,
+//! CPU pinning, and crash restart are handled by LibAFL's `Launcher` with LLMP.
+
 use std::{
-    fs,
-    io::{self, Read},
-    os::unix::process::CommandExt,
+    fs, io,
     path::Path,
-    process::{Child, ChildStdin, Command, Stdio},
-    thread,
-    time::Duration,
 };
 
-/// The launcher holds this pipe open for the worker's lifetime.
-pub fn watch_parent() {
-    thread::spawn(|| {
-        let mut input = io::stdin().lock();
-        let mut buffer = [0; 128];
-        loop {
-            match input.read(&mut buffer) {
-                Ok(0) | Err(_) => {
-                    // Workers lead their own group, including decoder and make children.
-                    unsafe {
-                        if libc::getpgrp() == libc::getpid() {
-                            libc::kill(-libc::getpid(), libc::SIGKILL);
-                        }
-                        libc::_exit(1)
-                    }
-                }
-                Ok(_) => {}
-            }
-        }
-    });
-}
-
-struct Worker {
-    child: Child,
-    _liveness: ChildStdin,
-}
-
-pub fn launch(
-    dirs: &[crate::cli::WorkerDirs],
-    workspace: Option<&Path>,
-    assembly_template: &Path,
-    solutions: &Path,
-) -> io::Result<()> {
-    let exchange = solutions.join("parallel-exchange");
-    if exchange.try_exists()? {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("Exchange already exists: {}", exchange.display()),
-        ));
-    }
-    if let Some(workspace) = workspace {
-        if workspace.try_exists()? {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("Worker workspace already exists: {}", workspace.display()),
-            ));
-        }
-        prepare_workspace(workspace, assembly_template, dirs)?;
-    }
-    let count = dirs.len();
-    crate::exchange::prepare(solutions, count)?;
-    let executable = std::env::current_exe()?;
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
-    let mut workers = Vec::with_capacity(count);
-    for index in 0..count {
-        let result = Command::new(&executable)
-            .args(&args)
-            .arg("--internal-worker-index")
-            .arg(index.to_string())
-            .arg("--internal-launcher-child")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .process_group(0)
-            .spawn();
-        match result {
-            Ok(mut child) => {
-                let liveness = child.stdin.take().expect("piped worker stdin");
-                workers.push(Worker {
-                    child,
-                    _liveness: liveness,
-                });
-            }
-            Err(error) => {
-                stop_workers(&mut workers);
-                return Err(io::Error::other(format!(
-                    "Cannot start worker {index}: {error}"
-                )));
-            }
-        }
-    }
-    eprintln!("Started {count} independent simulation workers; see worker-specific logs and solution directories.");
-    loop {
-        for index in 0..workers.len() {
-            match workers[index].child.try_wait() {
-                Ok(Some(status)) => {
-                    stop_workers(&mut workers);
-                    return Err(io::Error::other(format!(
-                        "Worker {index} exited unexpectedly: {status}"
-                    )));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    stop_workers(&mut workers);
-                    return Err(io::Error::other(format!(
-                        "Cannot monitor worker {index}: {error}"
-                    )));
-                }
-            }
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Ensures one worker's directories exist: copies the assembly template into the
-/// worker's build directory if missing and creates its simulator working directory.
-/// Used when each worker runs as its own process (e.g. a SLURM job array task), so it
-/// is safe under concurrency: every task only touches its own directories.
-pub fn ensure_worker_dirs(template: &Path, worker: &crate::cli::WorkerDirs) -> io::Result<()> {
-    if let Some(parent) = worker.assembly.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if !worker.assembly.exists() {
-        copy_directory(template, &worker.assembly)?;
-    }
-    fs::create_dir_all(&worker.simulator)?;
-    Ok(())
-}
-
+/// Creates a fresh worker workspace: copies the assembly template into each
+/// `worker-NNNN/build` and creates an empty `worker-NNNN/sim` directory.
+/// The workspace itself must not exist yet.
 pub fn prepare_workspace(
     workspace: &Path,
     template: &Path,
@@ -173,23 +56,6 @@ fn copy_directory(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn stop_workers(workers: &mut [Worker]) {
-    for worker in workers.iter_mut() {
-        let pid = worker.child.id() as libc::pid_t;
-        if unsafe { libc::kill(-pid, libc::SIGKILL) } != 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                eprintln!("Could not stop worker group {pid}: {error}");
-            }
-        }
-    }
-    for worker in workers {
-        if let Err(e) = worker.child.wait() {
-            eprintln!("Could not reap worker {}: {e}", worker.child.id());
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,31 +93,6 @@ mod tests {
             b"template"
         );
         assert!(prepare_workspace(&root, &template, &workers).is_err());
-        assert_eq!(
-            fs::read(workers[0].assembly.join("file")).unwrap(),
-            b"changed"
-        );
-    }
-
-    #[test]
-    fn ensure_worker_dirs_prepares_only_its_own_worker_idempotently() {
-        let temp = tempfile::tempdir().unwrap();
-        let template = temp.path().join("template");
-        fs::create_dir(&template).unwrap();
-        fs::write(template.join("file"), b"template").unwrap();
-        let root = temp.path().join("workspace");
-        let workers = dirs(&root, 2);
-        ensure_worker_dirs(&template, &workers[0]).unwrap();
-        assert_eq!(
-            fs::read(workers[0].assembly.join("file")).unwrap(),
-            b"template"
-        );
-        assert!(workers[0].simulator.is_dir());
-        assert!(!workers[1].assembly.exists());
-        assert!(!workers[1].simulator.exists());
-        // Idempotent: existing build content is kept, not overwritten.
-        fs::write(workers[0].assembly.join("file"), b"changed").unwrap();
-        ensure_worker_dirs(&template, &workers[0]).unwrap();
         assert_eq!(
             fs::read(workers[0].assembly.join("file")).unwrap(),
             b"changed"
