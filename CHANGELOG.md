@@ -28,6 +28,9 @@ Notable changes are summarized here. Earlier history is available in Git.
   setup plus `update_global_best`.
 - `--worker-index`, `--internal-worker-index`, and `--internal-launcher-child`
   are removed; the Launcher assigns worker IDs via `ClientDescription`.
+- `slurm-fuzzing.example.sbatch` now uses the single-task pattern
+  (`--ntasks=1 --cpus-per-task=N`) instead of a job array; the Launcher reads
+  the SLURM affinity mask and pins workers to the allocated cores.
 
 ### Added
 
