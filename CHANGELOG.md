@@ -14,6 +14,9 @@ Notable changes are summarized here. Earlier history is available in Git.
   Logging is initialized before forking so the broker and all workers share
   one central log file. The direct `libafl_core` dependency was removed
   (`ClientId` comes from `libafl_bolts`); edition bumped to 2024.
+- The crate is now explicitly Unix-only: a `compile_error!` on non-Unix replaces
+  the 31 `#[cfg(unix)]`/`#[cfg(not(unix))]` gates that previously allowed a
+  hardware-only build on other platforms.
 
 ### Added
 
