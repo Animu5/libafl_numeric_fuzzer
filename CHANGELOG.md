@@ -26,6 +26,8 @@ Notable changes are summarized here. Earlier history is available in Git.
   custom process launcher, stdin liveness watch, and process-group kill are gone.
   `src/exchange.rs` is renamed to `src/global_best.rs` and reduced to directory
   setup plus `update_global_best`.
+- `--worker-index`, `--internal-worker-index`, and `--internal-launcher-child`
+  are removed; the Launcher assigns worker IDs via `ClientDescription`.
 
 ### Added
 
