@@ -22,6 +22,10 @@ Notable changes are summarized here. Earlier history is available in Git.
   now exchanges `NewTestcase` events between workers via shared memory, with no
   polling delay. `parallel-exchange/` now only holds `global-best.txt` and the
   best input/assembly files for persistence.
+- `src/parallel.rs` is reduced to workspace setup (`prepare_workspace`); the
+  custom process launcher, stdin liveness watch, and process-group kill are gone.
+  `src/exchange.rs` is renamed to `src/global_best.rs` and reduced to directory
+  setup plus `update_global_best`.
 
 ### Added
 
