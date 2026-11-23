@@ -17,6 +17,11 @@ Notable changes are summarized here. Earlier history is available in Git.
 - The crate is now explicitly Unix-only: a `compile_error!` on non-Unix replaces
   the 31 `#[cfg(unix)]`/`#[cfg(not(unix))]` gates that previously allowed a
   hardware-only build on other platforms.
+- Filesystem input exchange between workers (1-second polling, `flock`-protected
+  publish, seen-set dedup) is removed. The LLMP event manager inside `fuzz_one`
+  now exchanges `NewTestcase` events between workers via shared memory, with no
+  polling delay. `parallel-exchange/` now only holds `global-best.txt` and the
+  best input/assembly files for persistence.
 
 ### Added
 
