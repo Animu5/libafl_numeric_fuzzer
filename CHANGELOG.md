@@ -31,8 +31,8 @@ Notable changes are summarized here. Earlier history is available in Git.
 - `slurm-fuzzing.example.sbatch` now uses the single-task pattern
   (`--ntasks=1 --cpus-per-task=N`) instead of a job array; the Launcher reads
   the SLURM affinity mask and pins workers to the allocated cores.
-- README and `fuzzer.simulation.example.toml` updated for the Launcher+LLMP
-  single-node model.
+- README, RUNNING.md, and `fuzzer.simulation.example.toml` updated for the
+  Launcher+LLMP single-node model.
 - Integration tests rewritten for the LLMP Launcher (the old `--worker-index`
   SLURM-array and launcher-death tests are gone). The broker port can be set
   via the `LLMP_BROKER_PORT` env var (default 1337), which tests use to avoid
