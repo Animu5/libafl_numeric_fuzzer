@@ -22,14 +22,16 @@ pub struct Shared {
     pub assembly: RefCell<Option<String>>,
     /// Unrecoverable harness error; makes the next `is_interesting` abort the fuzz loop.
     pub fatal: RefCell<Option<String>>,
+    /// Raw input bytes of the last run, used to persist the global best.
     pub input: RefCell<Vec<u8>>,
-    pub importing: Cell<bool>,
 }
 
 /// Scores each run by the evaluation that the harness stores in `shared`.
 /// A fatal harness error stored there aborts the fuzz loop.
 ///
-/// A new best score is interesting. Valid imported inputs are also admitted to the corpus.
+/// A new best score is interesting. Input exchange between parallel workers is
+/// handled by the LLMP event manager; the feedback only persists the global best
+/// to `parallel-exchange/global-best.txt` when running in parallel mode.
 /// Assembly for new best inputs is saved next to the input and as `best.S`.
 #[derive(Clone, Debug)]
 pub struct NumericFeedback {
@@ -49,7 +51,8 @@ pub struct NumericFeedback {
     /// Directory that receives `<filename>.S` and `best.S`.
     solutions_dir: PathBuf,
     shared: Rc<Shared>,
-    exchange: Option<crate::exchange::Exchange>,
+    /// Exchange root for global-best tracking; `None` in single-worker mode.
+    global_best: Option<(PathBuf, usize)>,
     name: Cow<'static, str>,
 }
 
@@ -66,13 +69,15 @@ impl NumericFeedback {
             last_assembly: None,
             solutions_dir,
             shared,
-            exchange: None,
+            global_best: None,
             name: Cow::Borrowed("NumericFeedback"),
         }
     }
 
-    pub fn set_exchange(&mut self, exchange: crate::exchange::Exchange) {
-        self.exchange = Some(exchange);
+    /// Enables global-best tracking: `root` is the `parallel-exchange` directory,
+    /// `worker` is this worker's 0-based index.
+    pub fn set_global_best(&mut self, root: PathBuf, worker: usize) {
+        self.global_best = Some((root, worker));
     }
 }
 
@@ -112,15 +117,20 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
                 }
                 self.metric = Some(evaluation.metric());
                 if evaluation.score() > self.best {
-                    if let Some(exchange) = &self.exchange {
+                    if let Some((root, worker)) = &self.global_best {
                         let assembly = self.last_assembly.as_deref().ok_or_else(|| {
                             Error::illegal_state("No assembly for measured parallel input")
                         })?;
-                        exchange
-                            .publish(&self.shared.input.borrow(), assembly, evaluation)
-                            .map_err(|e| {
-                                Error::illegal_state(format!("Cannot publish parallel input: {e}"))
-                            })?;
+                        crate::exchange::update_global_best(
+                            root,
+                            *worker,
+                            &self.shared.input.borrow(),
+                            assembly,
+                            &evaluation,
+                        )
+                        .map_err(|e| {
+                            Error::illegal_state(format!("Cannot update global best: {e}"))
+                        })?;
                     }
                     self.best = evaluation.score();
                     match evaluation.metric() {
@@ -139,9 +149,6 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
             _ => false,
         };
         self.last = self.last_best;
-        if self.shared.importing.get() && self.last_evaluation.is_some() {
-            self.last = true;
-        }
         Ok(self.last)
     }
 
@@ -238,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_inputs_require_valid_results_and_do_not_replace_local_best() {
+    fn non_best_inputs_are_not_interesting_and_do_not_replace_best() {
         let (mut f, shared, dir) = feedback();
         *shared.assembly.borrow_mut() = Some("best".into());
         assert!(run(&mut f, Some(2.0)).unwrap());
@@ -252,20 +259,10 @@ mod tests {
         )
         .unwrap();
 
-        shared.importing.set(true);
+        // A valid but lower score is not interesting and does not become best.S.
         assert!(!run(&mut f, None).unwrap());
-        *shared.assembly.borrow_mut() = Some("import".into());
-        assert!(run(&mut f, Some(1.0)).unwrap());
-        let mut imported = Testcase::<BytesInput>::new(BytesInput::new(vec![]));
-        <NumericFeedback as Feedback<(), BytesInput, (), ()>>::append_metadata(
-            &mut f,
-            &mut (),
-            &mut (),
-            &(),
-            &mut imported,
-        )
-        .unwrap();
-        assert_eq!(imported.filename().as_deref(), Some("import-0002"));
+        *shared.assembly.borrow_mut() = Some("lower".into());
+        assert!(!run(&mut f, Some(1.0)).unwrap());
         assert_eq!(std::fs::read_to_string(dir.join("best.S")).unwrap(), "best");
         std::fs::remove_dir_all(dir).unwrap();
     }

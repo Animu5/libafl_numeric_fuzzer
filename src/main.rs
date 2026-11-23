@@ -347,16 +347,10 @@ where
     let solutions = OnDiskCorpus::new(config.solutions_path.join("crashes"))?;
 
     let mut feedback = NumericFeedback::new(shared.clone(), config.solutions_path.clone());
-    if let Some((root, _, workers)) = &config.exchange {
-        // Standalone workers (e.g. SLURM array tasks) create the exchange if missing;
-        // launcher mode already created it via exchange::prepare.
-        exchange::ensure(root, *workers).map_err(context("Could not prepare input exchange"))?;
-    }
-    let mut exchange = config
-        .exchange
-        .map(|(path, index, workers)| exchange::Exchange::new(path, index, workers));
-    if let Some(exchange) = &exchange {
-        feedback.set_exchange(exchange.clone());
+    // In parallel mode the feedback persists the global best to the exchange root.
+    // LLMP handles the actual input exchange between workers inside fuzz_one.
+    if let Some((root, worker)) = &config.global_best {
+        feedback.set_global_best(root.clone(), *worker);
     }
     let mut objective = ();
     let mut state = StdState::new(
@@ -379,35 +373,13 @@ where
         .build()?;
 
     for seed in seeds {
-        if let Some(exchange) = &mut exchange {
-            exchange.remember_input(seed.as_ref());
-        }
         fuzzer.add_input(&mut state, &mut executor, manager, seed)?;
     }
 
     let mut stages = tuple_list!(StdMutationalStage::new(HavocScheduledMutator::new(
         havoc_mutations()
     )));
-    if let Some(exchange) = &mut exchange {
-        loop {
-            fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, manager)?;
-            for input in exchange
-                .pending_inputs()
-                .map_err(context("Input exchange failed"))?
-            {
-                shared.importing.set(true);
-                let raw: &[u8] = input.as_ref();
-                tracing::debug!(
-                    "Evaluating imported exchange input of {} bytes (head {:02x?})",
-                    raw.len(),
-                    &raw[..raw.len().min(16)]
-                );
-                let result = fuzzer.evaluate_input(&mut state, &mut executor, manager, &input);
-                shared.importing.set(false);
-                result?;
-            }
-        }
-    }
+    // The LLMP event manager exchanges inputs between workers inside fuzz_one.
     fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, manager)?;
 
     Ok(())

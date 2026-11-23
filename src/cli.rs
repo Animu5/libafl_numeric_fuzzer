@@ -193,7 +193,9 @@ pub struct Config {
     pub exec_timeout_ms: u64,
     pub worker_dirs: Option<Vec<WorkerDirs>>,
     pub worker_workspace: Option<PathBuf>,
-    pub exchange: Option<(PathBuf, usize, usize)>,
+    /// Global-best tracking: exchange root and this worker's 0-based index.
+    /// Set by `select_worker` in parallel mode; `None` in single-worker mode.
+    pub global_best: Option<(PathBuf, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -458,7 +460,7 @@ impl Args {
             exec_timeout_ms,
             worker_dirs,
             worker_workspace,
-            exchange: None,
+            global_best: None,
         })
     }
 }
@@ -497,11 +499,7 @@ impl Config {
             _ => return Err("Parallel workers require simulation".into()),
         }
         let name = format!("worker-{index:04}");
-        self.exchange = Some((
-            self.solutions_path.join("parallel-exchange"),
-            index,
-            dirs.len(),
-        ));
+        self.global_best = Some((self.solutions_path.join("parallel-exchange"), index));
         self.solutions_path = self.solutions_path.join(&name);
         self.snippet_dir = self.snippet_dir.take().map(|dir| dir.join(&name));
         let mut log = self.log_file.as_os_str().to_os_string();
