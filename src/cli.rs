@@ -96,22 +96,6 @@ pub struct Args {
     #[arg(long)]
     worker_workspace: Option<PathBuf>,
 
-    #[arg(long, hide = true)]
-    #[serde(skip)]
-    pub internal_worker_index: Option<usize>,
-
-    /// Run only worker N of the parallel worker set as this process, e.g.
-    /// --worker-index "$SLURM_ARRAY_TASK_ID" for a SLURM job array; with --worker-workspace
-    /// each such task prepares its own worker directories. CLI-only: never set in TOML.
-    #[arg(long)]
-    #[serde(skip)]
-    pub worker_index: Option<usize>,
-
-    /// Set by the launcher on its spawned workers so they watch the launcher's liveness pipe
-    #[arg(long, hide = true)]
-    #[serde(skip)]
-    pub internal_launcher_child: bool,
-
     /// Evaluation backend (default: hardware)
     #[arg(long, value_enum)]
     backend: Option<BackendKind>,
@@ -239,12 +223,7 @@ impl Args {
             Some(path) => load_file(path).unwrap_or_else(|e| fail(e)),
             None => Args::default(),
         };
-        let worker_index = self.internal_worker_index.or(self.worker_index);
-        let mut config = self.merge(file).unwrap_or_else(|e| fail(e));
-        if let Some(index) = worker_index {
-            config.select_worker(index).unwrap_or_else(|e| fail(e));
-        }
-        config
+        self.merge(file).unwrap_or_else(|e| fail(e))
     }
 
     fn merge(self, file: Args) -> Result<Config, String> {
@@ -719,12 +698,11 @@ mod tests {
     }
 
     #[test]
-    fn worker_index_is_cli_only() {
-        let args = Args::try_parse_from(["fuzzer", "--worker-index", "3"]).unwrap();
-        assert_eq!(args.worker_index, Some(3));
-        assert!(!args.internal_launcher_child);
-        // Per-task options must not be settable through the shared TOML config.
-        assert!(toml::from_str::<Args>("worker_index = 1").is_err());
-        assert!(toml::from_str::<Args>("internal_launcher_child = true").is_err());
+    fn removed_worker_index_args_are_rejected() {
+        // --worker-index and --internal-launcher-child were removed with the custom
+        // launcher; the Launcher assigns worker IDs internally.
+        assert!(Args::try_parse_from(["fuzzer", "--worker-index", "3"]).is_err());
+        assert!(Args::try_parse_from(["fuzzer", "--internal-launcher-child"]).is_err());
+        assert!(Args::try_parse_from(["fuzzer", "--internal-worker-index", "0"]).is_err());
     }
 }
