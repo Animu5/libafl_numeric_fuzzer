@@ -167,6 +167,15 @@ fn main() -> Result<(), Error> {
 /// monitor and aggregates stats; each forked client runs `run_worker` with its
 /// own `LlmpRestartingEventManager`.
 fn launch_parallel(config: Config) -> Result<(), Error> {
+    /// Broker port: from `LLMP_BROKER_PORT` env var (useful for tests running
+    /// multiple launchers concurrently), else 1337.
+    fn broker_port() -> u16 {
+        std::env::var("LLMP_BROKER_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1337)
+    }
+
     let workers = config
         .worker_dirs
         .as_deref()
@@ -224,7 +233,7 @@ fn launch_parallel(config: Config) -> Result<(), Error> {
             },
         )
         .cores(&cores)
-        .broker_port(1337)
+        .broker_port(broker_port())
         .build()
         .launch();
 
