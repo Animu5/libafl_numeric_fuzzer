@@ -6,8 +6,6 @@ Notable changes are summarized here. Earlier history is available in Git.
 
 ### Changed
 
-### Changed
-
 - Replace the custom parallel launcher (manual process spawning, stdin liveness
   pipe, process-group kill) with LibAFL's `Launcher` + LLMP shared-memory IPC.
   The broker process owns the monitor and aggregates per-client stats; each

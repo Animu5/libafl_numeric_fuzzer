@@ -213,7 +213,6 @@ fn launch_parallel(config: Config) -> Result<(), Error> {
         .map_err(|e| Error::illegal_state(format!("Trimming cores: {e}")))?;
 
     let monitor = create_monitor(config.monitor);
-    let config = config;
 
     let result = Launcher::builder()
         .shmem_provider(StdShMemProvider::new().map_err(context("Shared memory"))?)

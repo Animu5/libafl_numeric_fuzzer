@@ -139,21 +139,21 @@ impl SimulationBackend {
                 )));
             }
         }
-        if let Some(path) = &config.exclude_signal_file {
-            if !path.is_file() {
-                return Err(EvaluationError::Fatal(format!(
-                    "Analyzer exclusion file is not a file: {}",
-                    path.display()
-                )));
-            }
+        if let Some(path) = &config.exclude_signal_file
+            && !path.is_file()
+        {
+            return Err(EvaluationError::Fatal(format!(
+                "Analyzer exclusion file is not a file: {}",
+                path.display()
+            )));
         }
-        if let Some(path) = &config.vcd_dir {
-            if !path.is_dir() {
-                return Err(EvaluationError::Fatal(format!(
-                    "VCD directory is not a directory: {}",
-                    path.display()
-                )));
-            }
+        if let Some(path) = &config.vcd_dir
+            && !path.is_dir()
+        {
+            return Err(EvaluationError::Fatal(format!(
+                "VCD directory is not a directory: {}",
+                path.display()
+            )));
         }
         if config.target_scope.trim().is_empty() {
             return Err(EvaluationError::Fatal(
