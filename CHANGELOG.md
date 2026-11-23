@@ -2,7 +2,9 @@
 
 Notable changes are summarized here. Earlier history is available in Git.
 
-## Unreleased
+## 0.10.0 (unreleased)
+
+### Changed
 
 ### Changed
 
