@@ -22,9 +22,7 @@ pub struct Shared {
     pub assembly: RefCell<Option<String>>,
     /// Unrecoverable harness error; makes the next `is_interesting` abort the fuzz loop.
     pub fatal: RefCell<Option<String>>,
-    #[cfg(unix)]
     pub input: RefCell<Vec<u8>>,
-    #[cfg(unix)]
     pub importing: Cell<bool>,
 }
 
@@ -51,7 +49,6 @@ pub struct NumericFeedback {
     /// Directory that receives `<filename>.S` and `best.S`.
     solutions_dir: PathBuf,
     shared: Rc<Shared>,
-    #[cfg(unix)]
     exchange: Option<crate::exchange::Exchange>,
     name: Cow<'static, str>,
 }
@@ -69,13 +66,11 @@ impl NumericFeedback {
             last_assembly: None,
             solutions_dir,
             shared,
-            #[cfg(unix)]
             exchange: None,
             name: Cow::Borrowed("NumericFeedback"),
         }
     }
 
-    #[cfg(unix)]
     pub fn set_exchange(&mut self, exchange: crate::exchange::Exchange) {
         self.exchange = Some(exchange);
     }
@@ -117,7 +112,6 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
                 }
                 self.metric = Some(evaluation.metric());
                 if evaluation.score() > self.best {
-                    #[cfg(unix)]
                     if let Some(exchange) = &self.exchange {
                         let assembly = self.last_assembly.as_deref().ok_or_else(|| {
                             Error::illegal_state("No assembly for measured parallel input")
@@ -145,7 +139,6 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
             _ => false,
         };
         self.last = self.last_best;
-        #[cfg(unix)]
         if self.shared.importing.get() && self.last_evaluation.is_some() {
             self.last = true;
         }
@@ -244,7 +237,6 @@ mod tests {
         let _ = shared;
     }
 
-    #[cfg(unix)]
     #[test]
     fn imported_inputs_require_valid_results_and_do_not_replace_local_best() {
         let (mut f, shared, dir) = feedback();

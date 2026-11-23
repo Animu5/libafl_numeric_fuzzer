@@ -1,6 +1,10 @@
+// The simulation backend, parallel workers, and input exchange all use Unix-only
+// APIs (fork, flock, process groups). The hardware backend needs a Unix target too.
+#[cfg(not(unix))]
+compile_error!("libafl_fuzzer only supports Unix platforms");
+
 mod cli;
 mod evaluation;
-#[cfg(unix)]
 mod exchange;
 mod feedback;
 #[cfg(feature = "hardware")]
@@ -12,11 +16,9 @@ mod measurement;
 mod monitor;
 #[cfg(feature = "hardware")]
 mod openocd;
-#[cfg(unix)]
 mod parallel;
 #[cfg(feature = "hardware")]
 mod scope;
-#[cfg(unix)]
 mod simulation;
 mod snippet;
 
@@ -124,7 +126,6 @@ fn create_monitor(kind: MonitorKind) -> Box<dyn libafl::monitors::Monitor> {
 
 /// Wires up OpenOCD, the scope, the LibAFL components and runs the fuzz loop.
 fn main() -> Result<(), Error> {
-    #[cfg(unix)]
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new("--internal-simulation-supervisor"))
     {
@@ -153,10 +154,7 @@ fn main() -> Result<(), Error> {
         .map_err(context("Could not initialize logging"))?;
 
     if config.worker_dirs.is_some() {
-        #[cfg(unix)]
         return launch_parallel(config);
-        #[cfg(not(unix))]
-        return Err(Error::illegal_argument("Parallel workers require Unix"));
     }
 
     // Single-worker mode: the monitor and event manager are created here.
@@ -168,7 +166,6 @@ fn main() -> Result<(), Error> {
 /// `Launcher` with LLMP shared-memory IPC. The broker (this process) owns the
 /// monitor and aggregates stats; each forked client runs `run_worker` with its
 /// own `LlmpRestartingEventManager`.
-#[cfg(unix)]
 fn launch_parallel(config: Config) -> Result<(), Error> {
     let workers = config
         .worker_dirs
@@ -308,39 +305,21 @@ where
             simulator_timeout_ms,
             analyzer_timeout_ms,
         } => {
-            #[cfg(unix)]
-            {
-                let settings = simulation::SimulationConfig {
-                    simulator: simulator_path,
-                    simulator_args: simulator_args.into_iter().map(Into::into).collect(),
-                    working_dir: simulator_working_dir,
-                    analyzer: analyzer_path,
-                    target_scope,
-                    exclude_signal_file,
-                    vcd_dir,
-                    simulator_timeout: Duration::from_millis(simulator_timeout_ms),
-                    analyzer_timeout: Duration::from_millis(analyzer_timeout_ms),
-                };
-                Box::new(
-                    simulation::SimulationBackend::new(settings)
-                        .map_err(context("Could not configure simulation"))?,
-                )
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = (
-                    simulator_path,
-                    simulator_working_dir,
-                    simulator_args,
-                    analyzer_path,
-                    target_scope,
-                    exclude_signal_file,
-                    vcd_dir,
-                    simulator_timeout_ms,
-                    analyzer_timeout_ms,
-                );
-                return Err(Error::illegal_argument("Simulation backend requires Unix"));
-            }
+            let settings = simulation::SimulationConfig {
+                simulator: simulator_path,
+                simulator_args: simulator_args.into_iter().map(Into::into).collect(),
+                working_dir: simulator_working_dir,
+                analyzer: analyzer_path,
+                target_scope,
+                exclude_signal_file,
+                vcd_dir,
+                simulator_timeout: Duration::from_millis(simulator_timeout_ms),
+                analyzer_timeout: Duration::from_millis(analyzer_timeout_ms),
+            };
+            Box::new(
+                simulation::SimulationBackend::new(settings)
+                    .map_err(context("Could not configure simulation"))?,
+            )
         }
     };
 
@@ -368,17 +347,14 @@ where
     let solutions = OnDiskCorpus::new(config.solutions_path.join("crashes"))?;
 
     let mut feedback = NumericFeedback::new(shared.clone(), config.solutions_path.clone());
-    #[cfg(unix)]
     if let Some((root, _, workers)) = &config.exchange {
         // Standalone workers (e.g. SLURM array tasks) create the exchange if missing;
         // launcher mode already created it via exchange::prepare.
         exchange::ensure(root, *workers).map_err(context("Could not prepare input exchange"))?;
     }
-    #[cfg(unix)]
     let mut exchange = config
         .exchange
         .map(|(path, index, workers)| exchange::Exchange::new(path, index, workers));
-    #[cfg(unix)]
     if let Some(exchange) = &exchange {
         feedback.set_exchange(exchange.clone());
     }
@@ -403,7 +379,6 @@ where
         .build()?;
 
     for seed in seeds {
-        #[cfg(unix)]
         if let Some(exchange) = &mut exchange {
             exchange.remember_input(seed.as_ref());
         }
@@ -413,7 +388,6 @@ where
     let mut stages = tuple_list!(StdMutationalStage::new(HavocScheduledMutator::new(
         havoc_mutations()
     )));
-    #[cfg(unix)]
     if let Some(exchange) = &mut exchange {
         loop {
             fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, manager)?;

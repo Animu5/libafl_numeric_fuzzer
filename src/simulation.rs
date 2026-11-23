@@ -243,7 +243,6 @@ impl SimulationBackend {
             // Keep subprocess temp files off the size-limited /tmp.
             .env("TMPDIR", &self.config.working_dir)
             .args(&args);
-        #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
             unsafe {
@@ -472,7 +471,6 @@ fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     }
 }
 
-#[cfg(unix)]
 fn contains(arg: &OsStr, needle: &[u8]) -> bool {
     use std::os::unix::ffi::OsStrExt;
     arg.as_bytes()
@@ -480,7 +478,6 @@ fn contains(arg: &OsStr, needle: &[u8]) -> bool {
         .any(|part| part == needle)
 }
 
-#[cfg(unix)]
 fn expand(arg: &OsStr, elf: &Path, vcd: &Path) -> OsString {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let mut result = Vec::new();
@@ -517,7 +514,6 @@ impl ProcessOutput {
         )
     }
 
-    #[cfg(unix)]
     fn chipyard_cycle_limit(&self) -> bool {
         use std::os::unix::process::ExitStatusExt;
         if self.status.code() != Some(255) && self.status.signal() != Some(libc::SIGABRT) {
@@ -570,7 +566,6 @@ fn read_bounded_tail(mut reader: impl Read) -> io::Result<Vec<u8>> {
     }
 }
 
-#[cfg(unix)]
 fn run_process(
     command: &mut Command,
     timeout: Duration,
@@ -638,7 +633,6 @@ fn run_process(
     })
 }
 
-#[cfg(unix)]
 fn kill_group(group: libc::pid_t) -> io::Result<()> {
     // The child owns a separate process group; negative PID addresses that group only.
     let result = unsafe { libc::kill(-group, libc::SIGKILL) };

@@ -21,7 +21,6 @@ impl Harness {
     pub fn run(&mut self, input: &BytesInput) -> ExitKind {
         self.shared.evaluation.set(None);
         *self.shared.assembly.borrow_mut() = None;
-        #[cfg(unix)]
         self.shared.input.borrow_mut().clear();
 
         let bytes = input.target_bytes();
@@ -55,7 +54,6 @@ impl Harness {
                 }
                 *self.shared.assembly.borrow_mut() =
                     self.builder.last_assembly().map(str::to_string);
-                #[cfg(unix)]
                 self.shared
                     .input
                     .borrow_mut()
