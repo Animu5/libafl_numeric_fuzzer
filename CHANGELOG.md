@@ -6,6 +6,11 @@ Notable changes are summarized here. Earlier history is available in Git.
 
 ### Changed
 
+- Source files consolidated: `logging.rs` and `monitor.rs` merged into
+  `main.rs`, `global_best.rs` merged into `parallel.rs`, and `simulation.rs`
+  split into `simulation.rs` (backend) + `supervisor.rs` (supervisor process
+  mechanism). 15 source files reduced to 13; the largest file dropped from
+  1157 to 897 lines.
 - Replace the custom parallel launcher (manual process spawning, stdin liveness
   pipe, process-group kill) with LibAFL's `Launcher` + LLMP shared-memory IPC.
   The broker process owns the monitor and aggregates per-client stats; each
