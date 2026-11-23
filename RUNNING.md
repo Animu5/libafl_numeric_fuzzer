@@ -100,7 +100,7 @@ Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on
 
 ## Progress display
 
-`--monitor` (TOML `monitor`) selects how fuzzing progress is shown: `tui` (default; full-screen terminal UI), `print` (plain progress lines on stdout), `log` (a stats line in the log file every 60 s — use this for headless runs), or `none`. The parallel launcher discards worker stdout, so for worker runs use `log` to get per-worker progress in `<log_file>.worker-NNNN`.
+`--monitor` (TOML `monitor`) selects how fuzzing progress is shown: `tui` (default; full-screen terminal UI with per-client stats in parallel mode), `print` (plain progress lines on stdout), `log` (a stats line in the log file every 60 s — use this for headless runs), or `none`. In parallel mode the broker aggregates stats from all workers, so `tui` shows a per-client dashboard and `log` writes aggregated lines to the central `--log-file`.
 
 ## Saving snippets
 
@@ -222,44 +222,38 @@ those directories: canonical directory checks cannot detect a Makefile or simula
 that writes to an external shared location. Parallel operation is available only
 for simulation, not a single shared hardware target.
 
+Parallel workers run via LibAFL's `Launcher` with LLMP shared-memory IPC. The
+broker process (the one you start) owns the monitor and aggregates per-client
+stats; each forked worker is pinned to a core from the process affinity mask and
+runs with its own `LlmpRestartingEventManager`. Workers exchange interesting
+inputs instantly over shared memory (no polling delay); each imported input is
+re-evaluated by the receiving worker and added to its corpus if it beats the
+local best. If a worker crashes, the restarting manager respawns it
+automatically with its serialized state.
+
 Each worker keeps its own LibAFL corpus and local `best.S` under
-`<solutions_path>/worker-0000`, `worker-0001`, and so on. Workers publish their
-local improvements and periodically import distinct inputs published by peers,
-re-evaluating them through LibAFL and adding them to the receiving corpus.
-The shared `<solutions_path>/parallel-exchange/global-best.txt` records the
-full-precision score, activity, worker, and paths to the corresponding immutable
-input and assembly relative to `parallel-exchange`. Global improvements are also
-printed on the launcher terminal. The exchange directory must not already exist:
-use a fresh solutions path for each run, especially if simulation settings change.
-Input sharing is filesystem-based and is not instantaneous; each imported input
-is re-simulated by each receiving worker. Snippet archives use the same subdirectories,
-and logs are named `<log_file>.worker-0000`, etc. Worker stdout is discarded, so use `--monitor log` for per-worker progress lines in those log files.
-If a worker exits, the launcher stops the others and reports an error. When the
-launcher exits, workers and their active build processes are terminated; active
-simulation supervisors then clean up their own VCDs.
+`<solutions_path>/worker-0000`, `worker-0001`, and so on. The shared
+`<solutions_path>/parallel-exchange/global-best.txt` records the full-precision
+score, activity, worker, and paths to the corresponding immutable input and
+assembly. Global improvements are also printed on stderr. The exchange directory
+must not already exist: use a fresh solutions path for each run, especially if
+simulation settings change. Snippet archives use the same per-worker
+subdirectories. Logging is initialized before forking, so the broker and all
+workers share one central log file (`--log-file`); use `--monitor log` for
+headless runs to get aggregated stats lines in that file, or `--monitor tui` for
+the per-client dashboard.
 
 ## SLURM
 
-Two patterns work; see `slurm-fuzzing.example.sbatch`.
+Use the single-task pattern; see `slurm-fuzzing.example.sbatch`:
 
-1. **Single job, launcher spawns local workers** — allocate cores on one node and let
-   the launcher manage the workers as child processes:
-   `#SBATCH --ntasks=1 --cpus-per-task=16`, then run
-   `libafl_fuzzer --config ... --workers 16 --worker-workspace $SCRATCH/workspace ...`.
-2. **Job array, one worker per task across nodes** — `#SBATCH --array=0-15` and run
-   `libafl_fuzzer --config ... --workers 16 --worker-workspace $SCRATCH/workspace
-   --worker-index "$SLURM_ARRAY_TASK_ID" ...` on each task. `--worker-index` is
-   CLI-only (never in the shared TOML). Each array task prepares only its own
-   `worker-NNNN` directories inside the workspace and creates the input-exchange
-   directory if missing, so no separate launcher or setup step is needed. Array tasks
-   do not watch a launcher pipe, so they survive independently; if one task dies, the
-   others keep going.
+`#SBATCH --ntasks=1 --cpus-per-task=16`, then run
+`libafl_fuzzer --config ... --workers 16 --worker-workspace $SCRATCH/workspace ...`.
 
-For both patterns: the workspace and `solutions_path` (including `parallel-exchange`)
-must be on a filesystem shared by all tasks — on a cluster that is your scratch/NFS,
-not `/tmp`. Use a fresh workspace and solutions path per campaign; stale exchange or
-workspace contents from a previous run are reused or rejected. Per-task logs are
-`<log_file>.worker-NNNN`; the shared global best is
-`<solutions_path>/parallel-exchange/global-best.txt`. SLURM captures each task's
-stdout in its output file, so `--monitor print` or `log` both work there; `log` keeps
-progress in the per-worker log files.
+The Launcher reads the process affinity mask set by SLURM from
+`--cpus-per-task`, trims it to `--workers`, and forks one worker per core.
+The workspace and `solutions_path` must be on local scratch (not `/tmp`).
+Use a fresh workspace and solutions path per campaign. The central log is
+`--log-file`; the shared global best is
+`<solutions_path>/parallel-exchange/global-best.txt`. SLURM captures the
+broker's stdout in its output file, so `--monitor print` or `log` both work.
