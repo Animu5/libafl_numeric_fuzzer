@@ -196,7 +196,7 @@ pub struct Config {
     pub exchange: Option<(PathBuf, usize, usize)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkerDirs {
     pub assembly: PathBuf,
     pub simulator: PathBuf,
@@ -476,7 +476,7 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, String> {
 }
 
 impl Config {
-    fn select_worker(&mut self, index: usize) -> Result<(), String> {
+    pub fn select_worker(&mut self, index: usize) -> Result<(), String> {
         let dirs = self
             .worker_dirs
             .take()

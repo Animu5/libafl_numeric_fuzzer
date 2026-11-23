@@ -426,10 +426,16 @@ mod tests {
 
         // src/ exists but the decoder binary is missing.
         std::fs::create_dir(dir.join("src")).unwrap();
-        let mut b =
-            SnippetBuilder::new(dir.clone(), "/nonexistent/decode".into(), "/opt/riscv".into());
+        let mut b = SnippetBuilder::new(
+            dir.clone(),
+            "/nonexistent/decode".into(),
+            "/opt/riscv".into(),
+        );
         let err = b.build(b"x").unwrap_err().to_string();
-        assert!(err.contains("decoder /nonexistent/decode is not a file"), "{err}");
+        assert!(
+            err.contains("decoder /nonexistent/decode is not a file"),
+            "{err}"
+        );
 
         // The assembly environment itself is missing.
         let mut b = SnippetBuilder::new(dir.join("gone"), "/bin/cat".into(), "/opt/riscv".into());

@@ -1,7 +1,7 @@
 [package]
 name = "libafl_fuzzer"
 version = "0.9.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 default = ["hardware"]
@@ -10,8 +10,7 @@ hardware = ["dep:visa-rs"]
 [dependencies]
 libafl = { version = "0.16.1", features = ["tui_monitor", "afl_exec_sec", "track_hit_feedbacks", "introspection"] }
 libafl_bolts = { version = "0.16.1", features = ["cli"] }
-libafl_core = "0.16.1"
-clap = { version = "4.6.4", features = ["derive"]}
+clap = { version = "4.6", features = ["derive"]}
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "tracing-log"] }
 visa-rs = { version = "0.7.1", optional = true }

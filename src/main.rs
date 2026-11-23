@@ -21,7 +21,7 @@ mod simulation;
 mod snippet;
 
 use clap::Parser;
-use cli::{Args, BackendConfig, MonitorKind};
+use cli::{Args, BackendConfig, Config, MonitorKind};
 use evaluation::EvaluationBackend;
 use feedback::{NumericFeedback, Shared};
 #[cfg(feature = "hardware")]
@@ -30,7 +30,10 @@ use harness::Harness;
 use libafl::mutators::{havoc_mutations, HavocScheduledMutator};
 use libafl::{
     corpus::OnDiskCorpus,
-    events::SimpleEventManager,
+    events::{
+        EventConfig, EventFirer, EventReceiver, EventRestarter, Launcher, ProgressReporter,
+        SendExiting, SimpleEventManager,
+    },
     executors::InProcessExecutor,
     fuzzer::{Evaluator, Fuzzer, StdFuzzer},
     inputs::BytesInput,
@@ -40,16 +43,26 @@ use libafl::{
     state::StdState,
     Error,
 };
-use monitor::{DynMonitor, LoggingMonitor};
-use libafl_bolts::{current_nanos, rands::StdRand, tuples::tuple_list};
+use libafl_bolts::{
+    core_affinity::{Cores, get_core_ids},
+    current_nanos,
+    rands::StdRand,
+    shmem::{ShMemProvider, StdShMemProvider},
+    tuples::tuple_list,
+};
 #[cfg(feature = "hardware")]
 use measurement::{Measurement, ScopeMeasurement};
+use monitor::{DynMonitor, LoggingMonitor};
 #[cfg(feature = "hardware")]
 use openocd::OpenOcd;
 #[cfg(feature = "hardware")]
 use scope::Scope;
 use snippet::SnippetBuilder;
 use std::{path::Path, rc::Rc, time::Duration};
+
+/// The concrete LibAFL state used by every worker.
+type WorkerState =
+    StdState<OnDiskCorpus<BytesInput>, BytesInput, StdRand, OnDiskCorpus<BytesInput>>;
 
 /// Returns an error mapper that prefixes the message with `what`.
 fn context<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
@@ -94,6 +107,21 @@ fn load_seeds(path: Option<&Path>) -> Result<Vec<BytesInput>, Error> {
         .collect()
 }
 
+/// Builds the progress monitor selected by `kind`.
+fn create_monitor(kind: MonitorKind) -> Box<dyn libafl::monitors::Monitor> {
+    match kind {
+        MonitorKind::Tui => Box::new(
+            TuiMonitor::builder()
+                .title("Numeric Fuzzer")
+                .version(env!("CARGO_PKG_VERSION"))
+                .build(),
+        ),
+        MonitorKind::Print => Box::new(SimplePrintingMonitor {}),
+        MonitorKind::Log => Box::new(LoggingMonitor::new(Duration::from_secs(60))),
+        MonitorKind::None => Box::new(NopMonitor {}),
+    }
+}
+
 /// Wires up OpenOCD, the scope, the LibAFL components and runs the fuzz loop.
 fn main() -> Result<(), Error> {
     #[cfg(unix)]
@@ -103,12 +131,6 @@ fn main() -> Result<(), Error> {
         std::process::exit(simulation::supervisor_main());
     }
     let args = Args::parse();
-    #[cfg(unix)]
-    if args.internal_launcher_child {
-        // Only launcher-spawned workers watch the liveness pipe; standalone workers
-        // (e.g. SLURM array tasks) may have no stdin at all.
-        parallel::watch_parent();
-    }
 
     if args.list_scopes {
         #[cfg(feature = "hardware")]
@@ -124,21 +146,110 @@ fn main() -> Result<(), Error> {
     }
 
     let config = args.resolve();
-    if let Some(workers) = &config.worker_dirs {
-        #[cfg(unix)]
-        return parallel::launch(
-            workers,
-            config.worker_workspace.as_deref(),
-            &config.assembly_environment,
-            &config.solutions_path,
-        )
-        .map_err(context("Parallel workers failed"));
-        #[cfg(not(unix))]
-        return Err(Error::illegal_argument("Parallel workers require Unix"));
-    }
+
+    // Initialize logging before any forking so the broker and all workers share
+    // the same log file (central logging via fork-inherited file descriptor).
     logging::init(&config.log_file, config.log_level.as_deref())
         .map_err(context("Could not initialize logging"))?;
 
+    if config.worker_dirs.is_some() {
+        #[cfg(unix)]
+        return launch_parallel(config);
+        #[cfg(not(unix))]
+        return Err(Error::illegal_argument("Parallel workers require Unix"));
+    }
+
+    // Single-worker mode: the monitor and event manager are created here.
+    let mut manager = SimpleEventManager::new(DynMonitor(create_monitor(config.monitor)));
+    run_worker(config, &mut manager)
+}
+
+/// Prepares the worker workspace and launches parallel workers via LibAFL's
+/// `Launcher` with LLMP shared-memory IPC. The broker (this process) owns the
+/// monitor and aggregates stats; each forked client runs `run_worker` with its
+/// own `LlmpRestartingEventManager`.
+#[cfg(unix)]
+fn launch_parallel(config: Config) -> Result<(), Error> {
+    let workers = config
+        .worker_dirs
+        .as_deref()
+        .expect("worker_dirs checked by caller");
+
+    let exchange = config.solutions_path.join("parallel-exchange");
+    if exchange.try_exists().map_err(context("Checking exchange directory"))? {
+        return Err(Error::illegal_state(format!(
+            "Exchange already exists: {}",
+            exchange.display()
+        )));
+    }
+    if let Some(workspace) = &config.worker_workspace {
+        if workspace.try_exists().map_err(context("Checking worker workspace"))? {
+            return Err(Error::illegal_state(format!(
+                "Worker workspace already exists: {}",
+                workspace.display()
+            )));
+        }
+        parallel::prepare_workspace(workspace, &config.assembly_environment, workers)
+            .map_err(context("Preparing worker workspace"))?;
+    }
+    exchange::prepare(&config.solutions_path, workers.len())
+        .map_err(context("Preparing input exchange"))?;
+
+    // CPU cores: use the process affinity mask (respects SLURM --cpus-per-task),
+    // trimmed to the number of workers.
+    let core_ids = get_core_ids().map_err(|e| Error::illegal_state(format!("Cores: {e}")))?;
+    let mut cores = Cores {
+        cmdline: "auto".to_string(),
+        ids: core_ids,
+    };
+    cores
+        .trim(workers.len())
+        .map_err(|e| Error::illegal_state(format!("Trimming cores: {e}")))?;
+
+    let monitor = create_monitor(config.monitor);
+    let config = config;
+
+    let result = Launcher::builder()
+        .shmem_provider(StdShMemProvider::new().map_err(context("Shared memory"))?)
+        .monitor(DynMonitor(monitor))
+        .configuration(EventConfig::from_name("numeric-fuzzer"))
+        .run_client(
+            move |_restored: Option<WorkerState>,
+                  mut mgr,
+                  client_desc: libafl::events::launcher::ClientDescription| {
+                let mut config = config;
+                // Launcher client IDs are 1-based; worker directories are 0-based.
+                let worker_index = client_desc.id() - 1;
+                config
+                    .select_worker(worker_index)
+                    .map_err(Error::illegal_state)?;
+                run_worker(config, &mut mgr)
+            },
+        )
+        .cores(&cores)
+        .broker_port(1337)
+        .build()
+        .launch();
+
+    match result {
+        // The broker returns ShuttingDown when all clients disconnect cleanly.
+        Ok(()) | Err(Error::ShuttingDown) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Sets up the backend, harness, feedback, corpus, state, fuzzer, executor and
+/// runs the fuzz loop. Called in single-worker mode with a `SimpleEventManager`
+/// and, in parallel mode, inside the `Launcher`'s `run_client` closure with an
+/// `LlmpRestartingEventManager`.
+fn run_worker<EM>(config: Config, manager: &mut EM) -> Result<(), Error>
+where
+    EM: EventFirer<BytesInput, WorkerState>
+        + EventReceiver<BytesInput, WorkerState>
+        + EventRestarter<WorkerState>
+        + ProgressReporter<WorkerState>
+        + SendExiting,
+{
     if config.solutions_path.exists() && !config.solutions_path.is_dir() {
         return Err(Error::illegal_argument(
             "Solutions path exists but is not a directory",
@@ -282,26 +393,13 @@ fn main() -> Result<(), Error> {
 
     let mut fuzzer = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
 
-    let monitor: Box<dyn libafl::monitors::Monitor> = match config.monitor {
-        MonitorKind::Tui => Box::new(
-            TuiMonitor::builder()
-                .title("Numeric Fuzzer")
-                .version(env!("CARGO_PKG_VERSION"))
-                .build(),
-        ),
-        MonitorKind::Print => Box::new(SimplePrintingMonitor {}),
-        MonitorKind::Log => Box::new(LoggingMonitor::new(Duration::from_secs(60))),
-        MonitorKind::None => Box::new(NopMonitor {}),
-    };
-    let mut manager = SimpleEventManager::new(DynMonitor(monitor));
-
     let mut target = |input: &BytesInput| harness.run(input);
     let mut executor = InProcessExecutor::builder()
         .harness(&mut target)
         .timeout(Duration::from_millis(config.exec_timeout_ms))
         .fuzzer(&mut fuzzer)
         .state(&mut state)
-        .event_mgr(&mut manager)
+        .event_mgr(manager)
         .build()?;
 
     for seed in seeds {
@@ -309,7 +407,7 @@ fn main() -> Result<(), Error> {
         if let Some(exchange) = &mut exchange {
             exchange.remember_input(seed.as_ref());
         }
-        fuzzer.add_input(&mut state, &mut executor, &mut manager, seed)?;
+        fuzzer.add_input(&mut state, &mut executor, manager, seed)?;
     }
 
     let mut stages = tuple_list!(StdMutationalStage::new(HavocScheduledMutator::new(
@@ -318,7 +416,7 @@ fn main() -> Result<(), Error> {
     #[cfg(unix)]
     if let Some(exchange) = &mut exchange {
         loop {
-            fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+            fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, manager)?;
             for input in exchange
                 .pending_inputs()
                 .map_err(context("Input exchange failed"))?
@@ -330,13 +428,13 @@ fn main() -> Result<(), Error> {
                     raw.len(),
                     &raw[..raw.len().min(16)]
                 );
-                let result = fuzzer.evaluate_input(&mut state, &mut executor, &mut manager, &input);
+                let result = fuzzer.evaluate_input(&mut state, &mut executor, manager, &input);
                 shared.importing.set(false);
                 result?;
             }
         }
     }
-    fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut manager)?;
+    fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, manager)?;
 
     Ok(())
 }

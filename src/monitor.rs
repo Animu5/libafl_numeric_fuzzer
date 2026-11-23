@@ -1,6 +1,6 @@
 use libafl::monitors::{stats::manager::ClientStatsManager, Monitor};
 use libafl::Error;
-use libafl_core::ClientId;
+use libafl_bolts::ClientId;
 use std::{
     fmt,
     time::{Duration, Instant},

@@ -402,7 +402,10 @@ printf 'toggle_activity=12\ntoggle_coverage=%s\n' "$coverage"
         let output = child.wait_with_output().unwrap();
         stderr.push_str(&String::from_utf8_lossy(&output.stderr));
     }
-    assert!(success, "standalone workers did not exchange inputs: {stderr}");
+    assert!(
+        success,
+        "standalone workers did not exchange inputs: {stderr}"
+    );
     assert!(workspace.join("worker-0000/build/snippet.elf").is_file());
     assert!(workspace.join("worker-0001/build/snippet.elf").is_file());
     assert!(root.join("fuzzer.log.worker-0000").is_file());

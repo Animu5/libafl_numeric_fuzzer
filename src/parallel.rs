@@ -126,7 +126,7 @@ pub fn ensure_worker_dirs(template: &Path, worker: &crate::cli::WorkerDirs) -> i
     Ok(())
 }
 
-fn prepare_workspace(
+pub fn prepare_workspace(
     workspace: &Path,
     template: &Path,
     dirs: &[crate::cli::WorkerDirs],

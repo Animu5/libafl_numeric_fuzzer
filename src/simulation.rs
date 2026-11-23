@@ -23,7 +23,10 @@ fn hostname() -> String {
     let result =
         unsafe { libc::gethostname(buffer.as_mut_ptr().cast::<libc::c_char>(), buffer.len()) };
     if result == 0 {
-        let len = buffer.iter().position(|&byte| byte == 0).unwrap_or(buffer.len());
+        let len = buffer
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(buffer.len());
         String::from_utf8_lossy(&buffer[..len]).into_owned()
     } else {
         "unknown".to_string()
@@ -58,15 +61,16 @@ fn remove_stale_vcd_dirs(parent: &Path, host: &str, is_alive: impl Fn(i32) -> bo
         };
         // Full name: <prefix><host>-<pid>-<random>; the random suffix contains no dash.
         let mut parts = rest.rsplitn(3, '-');
-        let (Some(_random), Some(pid), Some(dir_host)) =
-            (parts.next(), parts.next(), parts.next())
+        let (Some(_random), Some(pid), Some(dir_host)) = (parts.next(), parts.next(), parts.next())
         else {
             continue;
         };
         if dir_host != host {
             continue;
         }
-        let Ok(pid) = pid.parse::<i32>() else { continue };
+        let Ok(pid) = pid.parse::<i32>() else {
+            continue;
+        };
         if is_alive(pid) {
             continue;
         }
