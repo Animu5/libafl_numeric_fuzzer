@@ -4,6 +4,17 @@ Notable changes are summarized here. Earlier history is available in Git.
 
 ## Unreleased
 
+### Changed
+
+- Replace the custom parallel launcher (manual process spawning, stdin liveness
+  pipe, process-group kill) with LibAFL's `Launcher` + LLMP shared-memory IPC.
+  The broker process owns the monitor and aggregates per-client stats; each
+  forked worker is pinned to a core from the process affinity mask (respects
+  SLURM `--cpus-per-task`) and runs with its own `LlmpRestartingEventManager`.
+  Logging is initialized before forking so the broker and all workers share
+  one central log file. The direct `libafl_core` dependency was removed
+  (`ClientId` comes from `libafl_bolts`); edition bumped to 2024.
+
 ### Added
 
 - Save the assembly for each new best input and keep `best.S` up to date.
