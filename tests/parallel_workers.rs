@@ -14,6 +14,55 @@ fn executable(path: &Path, script: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+/// A small VCD with a single 1-bit signal toggling once at #10 (1ns timescale):
+/// activity 1e8 toggles/s, coverage 1.0.
+const LOW_VCD: &str = "\
+$timescale 1ns $end
+$scope module TOP $end
+$scope module dut $end
+$var wire 1 ! value $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+#10
+1!
+";
+
+/// A VCD with ten toggles by #10: activity 1e9 toggles/s, clearly above LOW_VCD.
+const HIGH_VCD: &str = "\
+$timescale 1ns $end
+$scope module TOP $end
+$scope module dut $end
+$var wire 1 ! value $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+#1
+1!
+#2
+0!
+#3
+1!
+#4
+0!
+#5
+1!
+#6
+0!
+#7
+1!
+#8
+0!
+#9
+1!
+#10
+0!
+";
+
 fn base_args(root: &Path, template: &Path, workspace: &Path, solutions: &Path) -> Vec<std::ffi::OsString> {
     vec![
         "--backend".into(),
@@ -34,8 +83,6 @@ fn base_args(root: &Path, template: &Path, workspace: &Path, solutions: &Path) -
         root.join("fuzzer.log").as_os_str().to_os_string(),
         "--simulator-path".into(),
         root.join("simulator").as_os_str().to_os_string(),
-        "--analyzer-path".into(),
-        root.join("analyzer").as_os_str().to_os_string(),
         "--target-scope".into(),
         "TOP.dut".into(),
         "--simulator-arg={elf}".into(),
@@ -61,17 +108,20 @@ fn launcher_forks_workers_with_global_best_and_central_log() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     let template = make_template(root);
-    executable(&root.join("simulator"), "echo wave > \"$2\"");
-    // Worker 0 always scores 0.25; others score 0.75 on mutated inputs.
+    // The simulator writes a low-activity trace in worker-0000 and a high-activity
+    // trace everywhere else; the VCD is analyzed in-process by the fuzzer itself.
+    fs::write(root.join("low.vcd"), LOW_VCD).unwrap();
+    fs::write(root.join("high.vcd"), HIGH_VCD).unwrap();
     executable(
-        &root.join("analyzer"),
-        r#"
-case "$PWD" in
-  */worker-0000/sim) c=0.25 ;;
-  *) c=0.75 ;;
-esac
-printf 'toggle_activity=12\ntoggle_coverage=%s\n' "$c"
-"#,
+        &root.join("simulator"),
+        &format!(
+            r#"case "$PWD" in
+  */worker-0000/sim) cp "{}/low.vcd" "$2" ;;
+  *) cp "{}/high.vcd" "$2" ;;
+esac"#,
+            root.display(),
+            root.display()
+        ),
     );
     let workspace = root.join("workspace");
     let solutions = root.join("solutions");
@@ -87,9 +137,10 @@ printf 'toggle_activity=12\ntoggle_coverage=%s\n' "$c"
     let start = Instant::now();
     let global = solutions.join("parallel-exchange/global-best.txt");
     // Wait for all artifacts, not just the global best: worker-0000 may lag
-    // behind worker-0001, which can report the 0.75 global best first.
+    // behind worker-0001, whose high-activity trace becomes the global best.
     let ready = || {
-        fs::read_to_string(&global).is_ok_and(|s| s.contains("toggle_coverage=0.75\n"))
+        fs::read_to_string(&global)
+            .is_ok_and(|s| s.starts_with("toggle_activity=") && s.contains("worker=worker-0001\n"))
             && workspace.join("worker-0000/build/snippet.elf").is_file()
             && workspace.join("worker-0001/build/snippet.elf").is_file()
             && solutions.join("worker-0000/best.S").is_file()
@@ -143,19 +194,18 @@ fn independent_workers_use_isolated_directories() {
     }
 
     let sim = root.join("simulator");
-    let analyzer = root.join("analyzer");
+    fs::write(root.join("trace.vcd"), HIGH_VCD).unwrap();
     executable(
         &sim,
-        r#"
+        &format!(
+            r#"
 printf '%s' "$1" > elf-path
 echo ready > "$3/$(basename "$PWD").ready"
 while [ ! -e "$3/sim-0.ready" ] || [ ! -e "$3/sim-1.ready" ]; do sleep 0.02; done
-echo wave > "$2"
+cp "{}/trace.vcd" "$2"
 "#,
-    );
-    executable(
-        &analyzer,
-        "printf 'toggle_activity=12\\ntoggle_coverage=0.5\\n'",
+            root.display()
+        ),
     );
     let solutions = root.join("solutions");
     let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
@@ -182,8 +232,6 @@ echo wave > "$2"
         .arg(root.join("sim-1"))
         .arg("--simulator-path")
         .arg(&sim)
-        .arg("--analyzer-path")
-        .arg(&analyzer)
         .args(["--target-scope", "TOP.dut", "--simulator-arg={elf}", "--simulator-arg={vcd}"])
         .arg(format!("--simulator-arg={}", root.display()))
         .arg("--monitor")

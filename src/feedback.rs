@@ -6,18 +6,13 @@ use libafl::{
     feedbacks::{Feedback, StateInitializer},
 };
 use libafl_bolts::Named;
-use std::{
-    borrow::Cow,
-    cell::{Cell, RefCell},
-    path::PathBuf,
-    rc::Rc,
-};
+use std::{borrow::Cow, cell::RefCell, path::PathBuf, rc::Rc};
 
 /// State shared between the harness and the feedback.
 #[derive(Debug, Default)]
 pub struct Shared {
     /// Validated evaluation of the last run; `None` if it was not measured.
-    pub evaluation: Cell<Option<Evaluation>>,
+    pub evaluation: RefCell<Option<Evaluation>>,
     /// Assembly text decoded from the last input; `None` if it could not be decoded.
     pub assembly: RefCell<Option<String>>,
     /// Unrecoverable harness error; makes the next `is_interesting` abort the fuzz loop.
@@ -29,14 +24,19 @@ pub struct Shared {
 /// Scores each run by the evaluation that the harness stores in `shared`.
 /// A fatal harness error stored there aborts the fuzz loop.
 ///
-/// A new best score is interesting. Input exchange between parallel workers is
-/// handled by the LLMP event manager; the feedback only persists the global best
-/// to `parallel-exchange/global-best.txt` when running in parallel mode.
+/// Primary feedback is the trace map of the evaluation (one saturating toggle
+/// count per traced signal): a run is interesting if it raises any map entry
+/// above the history. The scalar score (toggle activity or power delta) is the
+/// secondary metric used for best tracking. Input exchange between parallel
+/// workers is handled by the LLMP event manager; the feedback only persists the
+/// global best to `parallel-exchange/global-best.txt` in parallel mode.
 /// Assembly for new best inputs is saved next to the input and as `best.S`.
 #[derive(Clone, Debug)]
 pub struct NumericFeedback {
-    /// Highest score seen so far.
+    /// Highest score seen so far (secondary metric).
     best: f64,
+    /// Trace map history: per-slot maximum seen so far.
+    history: Vec<u8>,
     /// Scores of different metrics must never be compared.
     metric: Option<Metric>,
     /// Result of the last `is_interesting` call.
@@ -57,10 +57,12 @@ pub struct NumericFeedback {
 }
 
 impl NumericFeedback {
-    /// Creates a feedback that starts with no best value and stores assemblies in `solutions_dir`.
+    /// Creates a feedback that starts with no best value and an empty trace map
+    /// history, storing assemblies in `solutions_dir`.
     pub fn new(shared: Rc<Shared>, solutions_dir: PathBuf) -> Self {
         Self {
             best: f64::MIN,
+            history: Vec::new(),
             metric: None,
             last: false,
             last_best: false,
@@ -90,7 +92,10 @@ impl Named for NumericFeedback {
 impl<S> StateInitializer<S> for NumericFeedback {}
 
 impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
-    /// Interesting if the score is a new maximum.
+    /// Interesting if the trace map raises any entry above the history (primary
+    /// feedback). Without a trace map (hardware backend) a new maximum score is
+    /// interesting instead. The score is tracked separately as the secondary
+    /// metric for best persistence.
     fn is_interesting(
         &mut self,
         _state: &mut S,
@@ -103,9 +108,10 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
             return Err(Error::illegal_state(msg));
         }
 
-        self.last_evaluation = self.shared.evaluation.take();
+        self.last_evaluation = self.shared.evaluation.borrow_mut().take();
         self.last_assembly = self.shared.assembly.borrow_mut().take();
-        self.last_best = match self.last_evaluation {
+        self.last_best = false;
+        let interesting = match &self.last_evaluation {
             Some(evaluation) => {
                 if self
                     .metric
@@ -116,6 +122,26 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
                     ));
                 }
                 self.metric = Some(evaluation.metric());
+
+                // Primary feedback: new coverage in the trace map.
+                let novel = match evaluation.trace_map() {
+                    Some(map) => {
+                        if map.len() > self.history.len() {
+                            self.history.resize(map.len(), 0);
+                        }
+                        let mut novel = false;
+                        for (slot, &value) in map.iter().enumerate() {
+                            if value > self.history[slot] {
+                                self.history[slot] = value;
+                                novel = true;
+                            }
+                        }
+                        novel
+                    }
+                    None => false,
+                };
+
+                // Secondary metric: track the best score for persistence.
                 if evaluation.score() > self.best {
                     if let Some((root, worker)) = &self.global_best {
                         let assembly = self.last_assembly.as_deref().ok_or_else(|| {
@@ -126,29 +152,42 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
                             *worker,
                             &self.shared.input.borrow(),
                             assembly,
-                            &evaluation,
+                            evaluation,
                         )
                         .map_err(|e| {
                             Error::illegal_state(format!("Cannot update global best: {e}"))
                         })?;
                     }
                     self.best = evaluation.score();
+                    self.last_best = true;
+                    if let Some(assembly) = &self.last_assembly {
+                        std::fs::write(self.solutions_dir.join("best.S"), assembly).map_err(
+                            |e| Error::illegal_state(format!("Could not write best snippet: {e}")),
+                        )?;
+                    }
                     match evaluation.metric() {
                         Metric::PowerDelta => {
                             tracing::info!("New best measurement delta: {}", self.best)
                         }
-                        Metric::ToggleCoverage => {
-                            tracing::info!("New best toggle coverage: {}", self.best)
+                        Metric::ToggleActivity => {
+                            tracing::info!(
+                                "New best toggle activity: {} changes/s (coverage {})",
+                                self.best,
+                                evaluation.toggle_coverage().unwrap_or(0.0)
+                            )
                         }
                     }
-                    true
+                }
+
+                if evaluation.trace_map().is_some() {
+                    novel
                 } else {
-                    false
+                    self.last_best
                 }
             }
-            _ => false,
+            None => false,
         };
-        self.last = self.last_best;
+        self.last = interesting;
         Ok(self.last)
     }
 
@@ -165,11 +204,11 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
         testcase: &mut Testcase<I>,
     ) -> Result<(), Error> {
         if self.last_best {
-            if let Some(evaluation) = self.last_evaluation {
+            if let Some(evaluation) = &self.last_evaluation {
                 self.count += 1;
                 let label = match evaluation.metric() {
                     Metric::PowerDelta => "delta",
-                    Metric::ToggleCoverage => "toggle_coverage",
+                    Metric::ToggleActivity => "toggle_activity",
                 };
                 let filename = format!("{:04}_{label}_{:.6}", self.count, evaluation.score());
                 *testcase.filename_mut() = Some(filename.clone());
@@ -186,12 +225,7 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
             std::fs::write(self.solutions_dir.join(format!("{name}.S")), &assembly).map_err(
                 |e| Error::illegal_state(format!("Could not write snippet assembly: {e}")),
             )?;
-            if self.last_best {
-                std::fs::write(self.solutions_dir.join("best.S"), &assembly).map_err(|e| {
-                    Error::illegal_state(format!("Could not write best snippet: {e}"))
-                })?;
-            }
-            tracing::debug!("Saved snippet assembly to {name}.S and best.S");
+            tracing::debug!("Saved snippet assembly to {name}.S");
         }
         Ok(())
     }
@@ -220,9 +254,26 @@ mod tests {
 
     /// Simulates one run in which the harness stored a power evaluation.
     fn run(f: &mut NumericFeedback, delta: Option<f64>) -> Result<bool, Error> {
-        f.shared
-            .evaluation
-            .set(delta.map(|v| Evaluation::power_delta(v).unwrap()));
+        *f.shared.evaluation.borrow_mut() =
+            delta.map(|v| Evaluation::power_delta(v).unwrap());
+        <NumericFeedback as Feedback<(), (), (), ()>>::is_interesting(
+            f,
+            &mut (),
+            &mut (),
+            &(),
+            &(),
+            &ExitKind::Ok,
+        )
+    }
+
+    /// Simulates one simulation-backend run with the given activity and trace map.
+    fn run_toggle(
+        f: &mut NumericFeedback,
+        activity: f64,
+        map: &[u8],
+    ) -> Result<bool, Error> {
+        *f.shared.evaluation.borrow_mut() =
+            Some(Evaluation::toggle_metrics(activity, 0.5, map.to_vec()).unwrap());
         <NumericFeedback as Feedback<(), (), (), ()>>::is_interesting(
             f,
             &mut (),
@@ -322,26 +373,49 @@ mod tests {
     }
 
     #[test]
-    fn coverage_scores_have_distinct_labels_and_keep_activity() {
+    fn trace_map_is_the_primary_feedback_and_activity_the_secondary() {
         let (mut f, shared, dir) = feedback();
-        let result = Evaluation::toggle_coverage(0.75, 42.0).unwrap();
-        shared.evaluation.set(Some(result));
+        // First run: new coverage (map entry 0 goes 0 -> 3), becomes best by activity.
         *shared.assembly.borrow_mut() = Some("nop".into());
-        assert!(
-            <NumericFeedback as Feedback<(), BytesInput, (), ()>>::is_interesting(
-                &mut f,
-                &mut (),
-                &mut (),
-                &BytesInput::new(vec![]),
-                &(),
-                &ExitKind::Ok
-            )
-            .unwrap()
-        );
+        assert!(run_toggle(&mut f, 42.0, &[3, 0]).unwrap());
+        assert!(f.last_best);
+        assert_eq!(f.last_evaluation.as_ref().unwrap().score(), 42.0);
         assert_eq!(
-            f.last_evaluation.unwrap().toggle_activity_per_second(),
-            Some(42.0)
+            f.last_evaluation.as_ref().unwrap().toggle_coverage(),
+            Some(0.5)
         );
+        // Same map, higher activity: not interesting (no new coverage) but still the best.
+        assert!(!run_toggle(&mut f, 100.0, &[3, 0]).unwrap());
+        assert!(f.last_best);
+        // New coverage in slot 1, lower activity: interesting, but not the best.
+        assert!(run_toggle(&mut f, 10.0, &[3, 1]).unwrap());
+        assert!(!f.last_best);
+        // Higher count in an already-seen slot is new coverage too.
+        assert!(run_toggle(&mut f, 10.0, &[4, 1]).unwrap());
+        // A shorter map only compares its own prefix.
+        assert!(!run_toggle(&mut f, 10.0, &[4]).unwrap());
+
+        let mut testcase = Testcase::new(BytesInput::new(vec![]));
+        <NumericFeedback as Feedback<(), BytesInput, (), ()>>::append_metadata(
+            &mut f,
+            &mut (),
+            &mut (),
+            &(),
+            &mut testcase,
+        )
+        .unwrap();
+        // Last run was interesting but not the best: saved as an import.
+        assert_eq!(testcase.filename().as_deref(), Some("import-0001"));
+        // best.S holds the highest-activity run's assembly.
+        assert_eq!(std::fs::read_to_string(dir.join("best.S")).unwrap(), "nop");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn toggle_activity_scores_have_distinct_labels() {
+        let (mut f, shared, dir) = feedback();
+        *shared.assembly.borrow_mut() = Some("nop".into());
+        assert!(run_toggle(&mut f, 42.0, &[1]).unwrap());
         let mut testcase = Testcase::new(BytesInput::new(vec![]));
         <NumericFeedback as Feedback<(), BytesInput, (), ()>>::append_metadata(
             &mut f,
@@ -353,7 +427,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             testcase.filename().as_deref(),
-            Some("0001_toggle_coverage_0.750000")
+            Some("0001_toggle_activity_42.000000")
         );
         assert_eq!(std::fs::read_to_string(dir.join("best.S")).unwrap(), "nop");
         std::fs::remove_dir_all(dir).unwrap();
@@ -363,9 +437,8 @@ mod tests {
     fn different_metrics_cannot_be_compared() {
         let (mut f, shared, dir) = feedback();
         assert!(run(&mut f, Some(1.0)).unwrap());
-        shared
-            .evaluation
-            .set(Some(Evaluation::toggle_coverage(0.5, 1.0).unwrap()));
+        *shared.evaluation.borrow_mut() =
+            Some(Evaluation::toggle_metrics(1.0, 0.5, vec![1]).unwrap());
         assert!(
             <NumericFeedback as Feedback<(), (), (), ()>>::is_interesting(
                 &mut f,

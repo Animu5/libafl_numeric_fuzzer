@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, path::Path};
+use std::{error::Error, fmt, path::Path, rc::Rc};
 
 /// Evaluates a freshly built candidate. Larger scores are more interesting.
 pub trait EvaluationBackend {
@@ -11,16 +11,21 @@ pub enum Metric {
     /// Running-minus-idle power, in watts.
     #[cfg_attr(not(feature = "hardware"), allow(dead_code))]
     PowerDelta,
-    /// Fraction of selected bit-vector bits that changed at least once.
-    ToggleCoverage,
+    /// Signal-level toggles per simulated second.
+    ToggleActivity,
 }
 
-/// A validated score and its optional secondary measurement.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A validated score, the optional bit-level toggle coverage, and the trace map.
+///
+/// For the simulation backend the trace map (one saturating toggle count per
+/// traced signal, from the integrated VCD analysis) is the primary feedback;
+/// the score (toggle activity) is the secondary metric used for best tracking.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Evaluation {
     metric: Metric,
     score: f64,
-    toggle_activity: Option<f64>,
+    toggle_coverage: Option<f64>,
+    map: Option<Rc<Vec<u8>>>,
 }
 
 impl Evaluation {
@@ -34,25 +39,31 @@ impl Evaluation {
         Ok(Self {
             metric: Metric::PowerDelta,
             score: watts,
-            toggle_activity: None,
+            toggle_coverage: None,
+            map: None,
         })
     }
 
-    pub fn toggle_coverage(coverage: f64, activity: f64) -> Result<Self, EvaluationError> {
-        if !coverage.is_finite() || !(0.0..=1.0).contains(&coverage) {
-            return Err(EvaluationError::Measurement(format!(
-                "toggle coverage must be finite and between 0 and 1, got {coverage}"
-            )));
-        }
+    pub fn toggle_metrics(
+        activity: f64,
+        coverage: f64,
+        map: Vec<u8>,
+    ) -> Result<Self, EvaluationError> {
         if !activity.is_finite() || activity < 0.0 {
             return Err(EvaluationError::Measurement(format!(
                 "toggle activity must be finite and non-negative, got {activity}"
             )));
         }
+        if !coverage.is_finite() || !(0.0..=1.0).contains(&coverage) {
+            return Err(EvaluationError::Measurement(format!(
+                "toggle coverage must be finite and between 0 and 1, got {coverage}"
+            )));
+        }
         Ok(Self {
-            metric: Metric::ToggleCoverage,
-            score: coverage,
-            toggle_activity: Some(activity),
+            metric: Metric::ToggleActivity,
+            score: activity,
+            toggle_coverage: Some(coverage),
+            map: Some(Rc::new(map)),
         })
     }
 
@@ -64,9 +75,15 @@ impl Evaluation {
         self.score
     }
 
-    /// Signal-level changes per simulated second, when reported by the analyzer.
-    pub fn toggle_activity_per_second(&self) -> Option<f64> {
-        self.toggle_activity
+    /// Fraction of selected bit-vector bits that changed at least once (simulation only).
+    pub fn toggle_coverage(&self) -> Option<f64> {
+        self.toggle_coverage
+    }
+
+    /// Trace map of the last run: one saturating toggle count per traced signal
+    /// (simulation only); `None` for the hardware backend.
+    pub fn trace_map(&self) -> Option<&[u8]> {
+        self.map.as_ref().map(|map| &***map)
     }
 }
 
@@ -93,83 +110,33 @@ impl fmt::Display for EvaluationError {
 
 impl Error for EvaluationError {}
 
-/// Parses the two key/value lines printed by vcdtogglerate on stdout.
-///
-/// The analyzer also reports zero for an empty selection or missing timing; its
-/// output does not distinguish those cases from a genuine zero measurement.
-pub fn parse_toggle_metrics(stdout: &str) -> Result<Evaluation, EvaluationError> {
-    let mut coverage = None;
-    let mut activity = None;
-    for line in stdout.lines() {
-        let (key, value) = line.split_once('=').ok_or_else(|| {
-            EvaluationError::Measurement(format!("invalid analyzer output line: {line:?}"))
-        })?;
-        let slot = match key {
-            "toggle_coverage" => &mut coverage,
-            "toggle_activity" => &mut activity,
-            _ => {
-                return Err(EvaluationError::Measurement(format!(
-                    "unexpected analyzer output key: {key:?}"
-                )));
-            }
-        };
-        if slot.is_some() {
-            return Err(EvaluationError::Measurement(format!(
-                "duplicate analyzer output key: {key}"
-            )));
-        }
-        *slot = Some(value.parse::<f64>().map_err(|_| {
-            EvaluationError::Measurement(format!("invalid {key} value: {value:?}"))
-        })?);
-    }
-
-    let coverage = coverage.ok_or_else(|| {
-        EvaluationError::Measurement("analyzer output is missing toggle_coverage".into())
-    })?;
-    let activity = activity.ok_or_else(|| {
-        EvaluationError::Measurement("analyzer output is missing toggle_activity".into())
-    })?;
-    Evaluation::toggle_coverage(coverage, activity)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_both_metrics_in_either_order() {
-        for output in [
-            "toggle_activity=1200.5\ntoggle_coverage=0.25\n",
-            "toggle_coverage=0.25\ntoggle_activity=1200.5\n",
-        ] {
-            let result = parse_toggle_metrics(output).unwrap();
-            assert_eq!(result.metric(), Metric::ToggleCoverage);
-            assert_eq!(result.score(), 0.25);
-            assert_eq!(result.toggle_activity_per_second(), Some(1200.5));
-        }
-    }
-
-    #[test]
     fn accepts_metric_boundaries_and_negative_power_delta() {
-        for coverage in [0.0, 1.0] {
-            assert_eq!(
-                Evaluation::toggle_coverage(coverage, 0.0).unwrap().score(),
-                coverage
-            );
-        }
         let power = Evaluation::power_delta(-0.5).unwrap();
         assert_eq!(power.metric(), Metric::PowerDelta);
         assert_eq!(power.score(), -0.5);
-        assert_eq!(power.toggle_activity_per_second(), None);
+        assert_eq!(power.toggle_coverage(), None);
+        assert!(power.trace_map().is_none());
+        for coverage in [0.0, 1.0] {
+            let result = Evaluation::toggle_metrics(1200.0, coverage, vec![0, 3, 255]).unwrap();
+            assert_eq!(result.metric(), Metric::ToggleActivity);
+            assert_eq!(result.score(), 1200.0);
+            assert_eq!(result.toggle_coverage(), Some(coverage));
+            assert_eq!(result.trace_map(), Some(&[0, 3, 255][..]));
+        }
     }
 
     #[test]
     fn rejects_invalid_metric_values() {
-        for coverage in [-0.01, 1.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(Evaluation::toggle_coverage(coverage, 0.0).is_err());
-        }
         for activity in [-0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(Evaluation::toggle_coverage(0.5, activity).is_err());
+            assert!(Evaluation::toggle_metrics(activity, 0.5, vec![1]).is_err());
+        }
+        for coverage in [-0.01, 1.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(Evaluation::toggle_metrics(1.0, coverage, vec![1]).is_err());
         }
         for watts in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(Evaluation::power_delta(watts).is_err());
@@ -177,33 +144,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_incomplete_duplicate_and_unexpected_output() {
-        for output in [
-            "",
-            "toggle_activity=1\n",
-            "toggle_coverage=0.5\n",
-            "toggle_activity=1\ntoggle_activity=2\ntoggle_coverage=0.5\n",
-            "toggle_activity=1\ntoggle_coverage=0.5\ntoggle_coverage=0.6\n",
-            "toggle_activity=1\ntoggle_coverage=0.5\nother=1\n",
-            "toggle_activity=1\ntoggle_coverage=0.5\nextra line\n",
-            "toggle_activity=1\ntoggle_coverage=oops\n",
-            "toggle_activity=1\ntoggle_coverage=0.5=1\n",
-            "toggle_activity=NaN\ntoggle_coverage=0.5\n",
-            "toggle_activity=1\ntoggle_coverage=inf\n",
-        ] {
-            assert!(parse_toggle_metrics(output).is_err(), "{output:?}");
-        }
-    }
-
-    #[test]
     fn error_categories_remain_distinguishable() {
         let errors = [
             EvaluationError::Candidate("target crashed".into()),
-            EvaluationError::Measurement("analyzer failed".into()),
+            EvaluationError::Measurement("analysis failed".into()),
             EvaluationError::Fatal("tool missing".into()),
         ];
         assert!(errors[0].to_string().contains("target crashed"));
-        assert!(errors[1].to_string().contains("analyzer failed"));
+        assert!(errors[1].to_string().contains("analysis failed"));
         assert!(errors[2].to_string().contains("tool missing"));
     }
 }

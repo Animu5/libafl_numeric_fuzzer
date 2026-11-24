@@ -18,3 +18,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 libc = "0.2"
 tempfile = "3"
+wellen = "0.25.7"
+memchr = "2"
+memmap2 = "0.9"

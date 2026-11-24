@@ -6,6 +6,23 @@ Notable changes are summarized here. Earlier history is available in Git.
 
 ### Changed
 
+- The `vcdtogglemeasure` project (`vcdtogglerate`) is integrated as the
+  `src/vcdtoggle/` module instead of being run as an external analyzer binary:
+  the VCD is analyzed in-process after the simulator finishes, so no
+  `--analyzer-path`/`--analyzer-timeout-ms` are needed anymore (both removed;
+  `exec_timeout_ms` now only has to exceed the simulator timeout plus build
+  time). New dependencies: `wellen`, `memchr`, `memmap2`. The simulation
+  supervisor child process now runs only the simulator; the parent worker owns
+  the per-run VCD directory and analyzes the trace itself.
+- Feedback reworked for the simulation backend: the analysis now produces a
+  trace map (one saturating toggle count per traced signal) which is the
+  primary feedback — an input is interesting when it raises any map entry above
+  the history. Toggle activity (changes per simulated second) is the secondary
+  score (`Metric::ToggleActivity`, replacing `Metric::ToggleCoverage`) used for
+  `best.S` and `parallel-exchange/global-best.txt` (which now records
+  `toggle_activity=` first, plus `toggle_coverage=`). The hardware backend is
+  unchanged and still uses the power delta as score.
+
 - Source files consolidated: `logging.rs` and `monitor.rs` merged into
   `main.rs`, `global_best.rs` merged into `parallel.rs`, and `simulation.rs`
   split into `simulation.rs` (backend) + `supervisor.rs` (supervisor process

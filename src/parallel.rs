@@ -88,10 +88,8 @@ pub fn update_global_best(
     assembly: &str,
     evaluation: &Evaluation,
 ) -> io::Result<()> {
-    if evaluation.metric() != Metric::ToggleCoverage {
-        return Err(io::Error::other(
-            "Global best only supports toggle coverage",
-        ));
+    if evaluation.metric() != Metric::ToggleActivity {
+        return Err(io::Error::other("Global best only supports toggle activity"));
     }
 
     let lock = OpenOptions::new()
@@ -133,9 +131,9 @@ pub fn update_global_best(
             let score = content
                 .lines()
                 .next()
-                .and_then(|line| line.strip_prefix("toggle_coverage="))
+                .and_then(|line| line.strip_prefix("toggle_activity="))
                 .and_then(|value| value.parse::<f64>().ok())
-                .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+                .filter(|value| value.is_finite() && *value >= 0.0)
                 .ok_or_else(|| io::Error::other("Invalid global-best record"))?;
             Some(score)
         }
@@ -145,13 +143,11 @@ pub fn update_global_best(
 
     if best.is_none_or(|score| evaluation.score() > score) {
         let mut temp = tempfile::NamedTempFile::new_in(root)?;
-        writeln!(temp, "toggle_coverage={}", evaluation.score())?;
+        writeln!(temp, "toggle_activity={}", evaluation.score())?;
         writeln!(
             temp,
-            "toggle_activity={}",
-            evaluation
-                .toggle_activity_per_second()
-                .expect("coverage has activity")
+            "toggle_coverage={}",
+            evaluation.toggle_coverage().unwrap_or(0.0)
         )?;
         writeln!(temp, "worker={worker_name}")?;
         writeln!(
@@ -166,7 +162,7 @@ pub fn update_global_best(
         )?;
         temp.persist(&record).map_err(|e| e.error)?;
         eprintln!(
-            "New global best toggle coverage: {} ({worker_name})",
+            "New global best toggle activity: {} changes/s ({worker_name})",
             evaluation.score()
         );
     }
@@ -247,7 +243,7 @@ mod tests {
                     index,
                     &[index as u8],
                     &format!("assembly-{index}"),
-                    &Evaluation::toggle_coverage(score, 10.0).unwrap(),
+                    &Evaluation::toggle_metrics(score, 0.9, vec![1]).unwrap(),
                 )
                 .unwrap();
             }));
@@ -256,7 +252,8 @@ mod tests {
             thread.join().unwrap();
         }
         let text = fs::read_to_string(root.join("global-best.txt")).unwrap();
-        assert!(text.contains("toggle_coverage=0.50000002\n"), "{text}");
+        assert!(text.contains("toggle_activity=0.50000002\n"), "{text}");
+        assert!(text.contains("toggle_coverage=0.9\n"), "{text}");
         assert!(text.contains("worker=worker-0001\n"), "{text}");
         let assembly = text
             .lines()

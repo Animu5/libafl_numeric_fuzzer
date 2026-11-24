@@ -19,6 +19,7 @@ mod scope;
 mod simulation;
 mod snippet;
 mod supervisor;
+mod vcdtoggle;
 
 use clap::Parser;
 use cli::{Args, BackendConfig, Config, MonitorKind};
@@ -417,23 +418,19 @@ where
             simulator_path,
             simulator_working_dir,
             simulator_args,
-            analyzer_path,
             target_scope,
             exclude_signal_file,
             vcd_dir,
             simulator_timeout_ms,
-            analyzer_timeout_ms,
         } => {
             let settings = simulation::SimulationConfig {
                 simulator: simulator_path,
                 simulator_args: simulator_args.into_iter().map(Into::into).collect(),
                 working_dir: simulator_working_dir,
-                analyzer: analyzer_path,
                 target_scope,
                 exclude_signal_file,
                 vcd_dir,
                 simulator_timeout: Duration::from_millis(simulator_timeout_ms),
-                analyzer_timeout: Duration::from_millis(analyzer_timeout_ms),
             };
             Box::new(
                 simulation::SimulationBackend::new(settings)

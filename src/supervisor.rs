@@ -1,12 +1,15 @@
-//! Simulation supervisor: the private child process that runs the simulator and
-//! analyzer with timeouts, process-group cleanup, and VCD lifecycle management.
+//! Simulation supervisor: the private child process that runs the simulator with
+//! timeouts and process-group cleanup. The VCD it produces is analyzed in-process
+//! by the parent worker (see `simulation::SimulationBackend::analyze_vcd`), so the
+//! trace map stays in the worker that needs it for feedback.
 //! Spawned by `SimulationBackend::run` via `--internal-simulation-supervisor`.
 
-use crate::evaluation::{Evaluation, EvaluationError};
-use crate::simulation::{OUTPUT_LIMIT, SimulationBackend, SimulationConfig};
+use crate::evaluation::EvaluationError;
+use crate::simulation::OUTPUT_LIMIT;
 use std::{
+    ffi::OsString,
     io::{self, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     sync::{
         Arc,
@@ -20,7 +23,6 @@ pub(crate) struct ProcessOutput {
     pub(crate) status: ExitStatus,
     pub(crate) timed_out: bool,
     pub(crate) stdout: Vec<u8>,
-    pub(crate) stdout_truncated: bool,
     pub(crate) stderr: Vec<u8>,
 }
 
@@ -53,9 +55,8 @@ impl ProcessOutput {
     }
 }
 
-fn read_bounded(mut reader: impl Read) -> io::Result<(Vec<u8>, bool)> {
+fn read_bounded(mut reader: impl Read) -> io::Result<Vec<u8>> {
     let mut output = Vec::new();
-    let mut truncated = false;
     let mut buffer = [0; 8192];
     loop {
         let count = reader.read(&mut buffer)?;
@@ -64,9 +65,8 @@ fn read_bounded(mut reader: impl Read) -> io::Result<(Vec<u8>, bool)> {
         }
         let keep = count.min(OUTPUT_LIMIT.saturating_sub(output.len()));
         output.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < count;
     }
-    Ok((output, truncated))
+    Ok(output)
 }
 
 fn read_bounded_tail(mut reader: impl Read) -> io::Result<Vec<u8>> {
@@ -141,13 +141,12 @@ pub(crate) fn run_process(
         .map_err(|_| io::Error::other("stderr reader panicked"))?;
     let status = status?;
     cleanup?;
-    let (stdout, stdout_truncated) = stdout?;
+    let stdout = stdout?;
     let stderr = stderr?;
     Ok(ProcessOutput {
         status,
         timed_out,
         stdout,
-        stdout_truncated,
         stderr,
     })
 }
@@ -167,10 +166,80 @@ fn kill_group(group: libc::pid_t) -> io::Result<()> {
     }
 }
 
+/// Runs the simulator as a supervised child: working directory and `TMPDIR` set,
+/// core dumps disabled, stdout/stderr captured with a size limit, killed (with its
+/// whole process group) on timeout or parent death.
+pub(crate) fn run_simulator_process(
+    simulator: &Path,
+    working_dir: &Path,
+    args: &[OsString],
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> Result<ProcessOutput, EvaluationError> {
+    let mut command = Command::new(simulator);
+    command
+        .current_dir(working_dir)
+        // Keep subprocess temp files off the size-limited /tmp.
+        .env("TMPDIR", working_dir)
+        .args(args);
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                let mut limits = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                if libc::getrlimit(libc::RLIMIT_CORE, limits.as_mut_ptr()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut limits = limits.assume_init();
+                limits.rlim_cur = 0;
+                if libc::setrlimit(libc::RLIMIT_CORE, &limits) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    run_process(&mut command, timeout, cancelled)
+        .map_err(|e| EvaluationError::Fatal(format!("Simulator process: {e}")))
+}
+
+/// Maps a finished simulator run to an outcome: timeouts and nonzero exits are
+/// candidate failures (except Chipyard's cycle-limit abort), a missing VCD is a
+/// measurement failure.
+pub(crate) fn classify_simulator_output(
+    output: &ProcessOutput,
+    vcd: &Path,
+) -> Result<(), EvaluationError> {
+    if output.timed_out {
+        return Err(EvaluationError::Candidate(format!(
+            "Simulator timed out: {}",
+            output.diagnostic()
+        )));
+    }
+    if !output.status.success() && !output.chipyard_cycle_limit() {
+        return Err(EvaluationError::Candidate(format!(
+            "Simulator exited {}: {}",
+            output.status,
+            output.diagnostic()
+        )));
+    }
+    if !vcd.is_file() {
+        return Err(EvaluationError::Measurement(format!(
+            "Simulator did not produce VCD {}: {}",
+            vcd.display(),
+            output.diagnostic()
+        )));
+    }
+    Ok(())
+}
+
 /// Entry point for the private child process. Its stdin is a parent-liveness pipe.
+/// Arguments: `<elf> <simulator> <working_dir> <vcd> <sim_secs> <sim_nanos> <simulator args...>`
+/// (the parent already expanded `{elf}`/`{vcd}`). Exit codes: 0 success, 10 candidate
+/// failure, 11 measurement failure, 12 fatal.
 pub fn supervisor_main() -> i32 {
     // The parent captures this process's stderr, so log there (default debug) to make
-    // failures carry the full simulator and analyzer command lines.
+    // failures carry the full simulator command line.
     let _ = tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .with_ansi(false)
@@ -195,17 +264,8 @@ pub fn supervisor_main() -> i32 {
         }
     });
 
-    match supervisor_evaluate(&cancelled) {
-        Ok(result) => {
-            println!(
-                "toggle_activity={}",
-                result
-                    .toggle_activity_per_second()
-                    .expect("coverage has activity")
-            );
-            println!("toggle_coverage={}", result.score());
-            0
-        }
+    match supervisor_run(&cancelled) {
+        Ok(()) => 0,
         Err(EvaluationError::Candidate(message)) => {
             eprintln!("{message}");
             10
@@ -221,22 +281,17 @@ pub fn supervisor_main() -> i32 {
     }
 }
 
-fn supervisor_evaluate(cancelled: &AtomicBool) -> Result<Evaluation, EvaluationError> {
+fn supervisor_run(cancelled: &AtomicBool) -> Result<(), EvaluationError> {
     let mut args = std::env::args_os().skip(2);
-    let mut next = |name| {
+    let mut next = |name: &str| {
         args.next()
             .ok_or_else(|| EvaluationError::Fatal(format!("Missing supervisor argument: {name}")))
     };
     let elf = PathBuf::from(next("ELF")?);
     let simulator = PathBuf::from(next("simulator")?);
     let working_dir = PathBuf::from(next("working directory")?);
-    let analyzer = PathBuf::from(next("analyzer")?);
-    let target_scope = next("target scope")?
-        .into_string()
-        .map_err(|_| EvaluationError::Fatal("Target scope is not UTF-8".into()))?;
-    let exclusion = PathBuf::from(next("exclusions")?);
-    let vcd_dir = PathBuf::from(next("vcd directory")?);
-    let mut number = |name| -> Result<u64, EvaluationError> {
+    let vcd = PathBuf::from(next("VCD path")?);
+    let mut number = |name: &str| -> Result<u64, EvaluationError> {
         next(name)?
             .to_str()
             .and_then(|s| s.parse().ok())
@@ -244,31 +299,31 @@ fn supervisor_evaluate(cancelled: &AtomicBool) -> Result<Evaluation, EvaluationE
     };
     let sim_secs = number("simulator timeout seconds")?;
     let sim_nanos = number("simulator timeout nanoseconds")?;
-    let analyzer_secs = number("analyzer timeout seconds")?;
-    let analyzer_nanos = number("analyzer timeout nanoseconds")?;
-    if sim_nanos >= 1_000_000_000 || analyzer_nanos >= 1_000_000_000 {
+    if sim_nanos >= 1_000_000_000 {
         return Err(EvaluationError::Fatal(
             "Invalid supervisor timeout nanoseconds".into(),
         ));
     }
-    let config = SimulationConfig {
+    let simulator_args: Vec<OsString> = args.collect();
+    tracing::debug!(
+        "Supervisor running simulator {:?} in {:?} for ELF {} (vcd {}, args {:?})",
         simulator,
-        simulator_args: args.collect(),
         working_dir,
-        analyzer,
-        target_scope,
-        exclude_signal_file: if exclusion.as_os_str().is_empty() {
-            None
-        } else {
-            Some(exclusion)
-        },
-        vcd_dir: if vcd_dir.as_os_str().is_empty() {
-            None
-        } else {
-            Some(vcd_dir)
-        },
-        simulator_timeout: Duration::new(sim_secs, sim_nanos as u32),
-        analyzer_timeout: Duration::new(analyzer_secs, analyzer_nanos as u32),
-    };
-    SimulationBackend::new(config)?.run_direct(&elf, cancelled)
+        elf.display(),
+        vcd.display(),
+        simulator_args
+    );
+    let output = run_simulator_process(
+        &simulator,
+        &working_dir,
+        &simulator_args,
+        Duration::new(sim_secs, sim_nanos as u32),
+        cancelled,
+    )?;
+    tracing::debug!(
+        "Simulator exited {} (timed_out={})",
+        output.status,
+        output.timed_out
+    );
+    classify_simulator_output(&output, &vcd)
 }

@@ -7,8 +7,11 @@ This project is a prototype LibAFL-based fuzzer that uses a numeric measurement 
 The intended use case is to generate or mutate inputs for a RISC-V target and maximize a measured value such as power consumption.
 
 The default hardware backend communicates with the target through OpenOCD. A
-simulation backend runs a Chipyard-built Verilator simulator and scores VCD toggle
-coverage using `vcdtogglerate`.
+simulation backend runs a Chipyard-built Verilator simulator and analyzes the
+resulting VCD in-process with the integrated `vcdtogglerate` engine
+(`src/vcdtoggle/`): each run produces a trace map (one saturating toggle count
+per traced signal) that drives coverage feedback, with toggle activity as the
+secondary score.
 
 ## Current Implementation
 
@@ -23,8 +26,10 @@ For the default hardware backend it then:
 3. resumes the target (the programs are infinite loops), waits `--settle-ms`, captures the running level and reads F1 (running minus idle, computed by the scope);
 4. scores the input by that delta and treats it as interesting if it is a new best.
 
-The simulation backend instead runs the ELF in the supplied simulator, analyzes
-its VCD, and maximizes toggle coverage while logging toggle activity. See
+The simulation backend instead runs the ELF in the supplied simulator and
+analyzes its VCD in-process: an input is interesting when its trace map covers
+a signal (or toggle count) never seen before; the toggle activity per simulated
+second is the secondary metric used for best tracking. See
 `fuzzer.simulation.example.toml` and `RUNNING.md` for configuration.
 Parallel simulation workers run on a single node via LibAFL's `Launcher` with LLMP
 shared-memory IPC: workers are forked and pinned to cores, exchange interesting
@@ -43,20 +48,23 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 * `src/harness.rs`: per-input build and evaluation dispatch;
 * `src/evaluation.rs`, `src/hardware.rs`, `src/simulation.rs`: backend contract,
   hardware execution and the simulation backend;
+* `src/vcdtoggle/`: integrated VCD toggle analysis (vendored from the
+  `vcdtogglemeasure` project) producing metrics and the trace map;
 * `src/snippet.rs`: `atndecode` and `make` steps;
-* `src/feedback.rs`: numeric feedback;
+* `src/feedback.rs`: trace-map coverage feedback with a numeric best score;
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
 * `src/openocd.rs`: OpenOCD Tcl client;
-* `src/logging.rs`: file logging;
 * `fuzzer.example.toml`, `fuzzer.simulation.example.toml`, `slurm-fuzzing.example.sbatch`, `RUNNING.md` (setup and execution), `TODO.md` (remaining work), `CHANGELOG.md` (notable changes).
 
 ## Current Limitations
 
 The full setup has not yet been tested end to end on the final hardware, and the OpenOCD interface and target configuration still need to be confirmed. See `TODO.md`.
 
-The simulation score is toggle coverage, a fraction rather than watts.
-`vcdtogglerate` may report zero when no counted bits or usable change time exist,
-so zero alone does not establish that the intended signals were measured.
+The simulation score is toggle activity (changes per simulated second), not
+watts. The integrated analyzer may report zero activity when no counted signal
+changed or no usable change time exists, so zero alone does not establish that
+the intended signals were measured; the trace map tells apart "no signal
+toggled" from "the same signals toggled again".
 
 ## Attribution
 

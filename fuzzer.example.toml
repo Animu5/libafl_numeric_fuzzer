@@ -23,11 +23,9 @@ scope_timeout_ms = 20000
 # simulator_working_dir = "/path/to/chipyard/simulator/working-directory"
 # vcd_dir = "/path/to/large-disk/traces"  # per-run trace dirs (default: simulator_working_dir)
 # simulator_arg = ["+max-cycles=10000000", "+loadmem={elf}", "+vcdfile={vcd}", "{elf}"]
-# analyzer_path = "/path/to/vcdtogglerate"
-# target_scope = "TOP.path.to.target"
+# target_scope = "TOP.path.to.target"  # VCD scope analyzed in-process (src/vcdtoggle)
 # exclude_signal_file = "/path/to/excluded-signals.txt"
 # simulator_timeout_ms = 600000
-# analyzer_timeout_ms = 120000
 
 # Parallel workers (require backend = "simulation" and workers >= 2):
 # workers = 2

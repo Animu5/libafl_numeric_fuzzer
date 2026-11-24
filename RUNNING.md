@@ -10,8 +10,9 @@ Both backends need:
 
 The default hardware backend additionally needs OpenOCD, a debug adapter, a
 supported target, and a Teledyne oscilloscope reachable through NI-VISA.
-The Unix simulation backend needs a built Chipyard simulator and the
-`vcdtogglerate` executable.
+The Unix simulation backend needs a built Chipyard simulator; the VCD analysis
+runs in-process through the integrated `vcdtoggle` module, no external analyzer
+binary is needed.
 
 The full setup has not yet been tested on the final hardware.
 
@@ -96,7 +97,7 @@ Inputs with a new best F1 delta are logged as `New best measurement delta: <valu
 
 ## Logging
 
-Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on every start. Set the filter with `--log-level` (TOML `log_level`), e.g. `--log-level debug` or `--log-level info,libafl=debug`; if unset, `RUST_LOG` is honored, otherwise the level is `info`. LibAFL logs through the `log` crate, and those records are bridged into the same file, so `libafl`/`libafl_bolts` targets can be filtered the same way. With `--log-level debug` the log shows every snippet build, every simulation and analyzer invocation (with expanded arguments and exit statuses), and each skipped input with its size and a hex preview.
+Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on every start. Set the filter with `--log-level` (TOML `log_level`), e.g. `--log-level debug` or `--log-level info,libafl=debug`; if unset, `RUST_LOG` is honored, otherwise the level is `info`. LibAFL logs through the `log` crate, and those records are bridged into the same file, so `libafl`/`libafl_bolts` targets can be filtered the same way. With `--log-level debug` the log shows every snippet build, every simulation invocation and in-process VCD analysis (with expanded arguments and exit statuses), and each skipped input with its size and a hex preview.
 
 ## Progress display
 
@@ -108,7 +109,7 @@ Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on
 
 ## Run timeout
 
-LibAFL kills the process if one run takes longer than its executor timeout (default 5 s), which a build, a program load and two scope acquisitions exceed. `--exec-timeout-ms` (default 900000) sets it; it must be larger than the sum of build time, load time, both acquisitions and `--settle-ms` (simulation: build time plus both subprocess deadlines). A timeout shows up in the log as `Timeout in fuzz run.`
+LibAFL kills the process if one run takes longer than its executor timeout (default 5 s), which a build, a program load and two scope acquisitions exceed. `--exec-timeout-ms` (default 900000) sets it; it must be larger than the sum of build time, load time, both acquisitions and `--settle-ms` (simulation: build time plus the simulator deadline; the in-process VCD analysis is a bounded single pass and adds to it). A timeout shows up in the log as `Timeout in fuzz run.`
 
 ## Oscilloscope (VISA)
 
@@ -124,16 +125,16 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 
 ## Source layout
 
-`cli.rs` (arguments/config), `logging.rs`, `feedback.rs` (numeric feedback), `harness.rs` (per-input build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `snippet.rs` (decode and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `main.rs` (wiring).
+`cli.rs` (arguments/config), `feedback.rs` (trace-map coverage feedback with a numeric best score), `harness.rs` (per-input build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `simulation.rs` (simulator supervision + in-process VCD analysis), `vcdtoggle/` (integrated VCD toggle engine: metrics + trace map), `supervisor.rs` (simulator child process), `snippet.rs` (decode and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `parallel.rs` (workspace setup + global best), `main.rs` (wiring and logging).
 
 ## Simulation backend
 
 Select `--backend simulation` or `backend = "simulation"` in TOML; the default
-is hardware. See `fuzzer.simulation.example.toml`. The backend accepts paths to the built simulator and
-`vcdtogglerate`, a simulator working directory, ordered simulator arguments, a
-target scope, an optional exclusion file, and separate process timeouts
-(`--simulator-timeout-ms`, default 600000; `--analyzer-timeout-ms`, default 120000 —
-10,000,000 cycles takes minutes in Verilator, so the defaults leave room for that).
+is hardware. See `fuzzer.simulation.example.toml`. The backend accepts the path to the built simulator,
+a simulator working directory, ordered simulator arguments, a target scope, an
+optional exclusion file, and the simulator timeout
+(`--simulator-timeout-ms`, default 600000 — 10,000,000 cycles takes minutes in
+Verilator, so the default leaves room for that).
 Relative configured paths resolve from the fuzzer's starting directory, not the
 simulator working directory. Arguments are passed directly without a shell:
 `{elf}` and `{vcd}` are replaced within each argument by absolute paths. Both
@@ -144,18 +145,25 @@ described below. No simulator flags are assumed.
 
 The TOML `simulator_arg` is an ordered array. On the command line, repeat
 `--simulator-arg=VALUE` for each argument; if any are supplied they replace
-the entire TOML array. All other CLI values also override TOML. Both simulator
-and analyzer timeouts must be positive, and `exec_timeout_ms` must exceed their
-sum; allow additional time for building the ELF.
+the entire TOML array. All other CLI values also override TOML. The simulator
+timeout must be positive, and `exec_timeout_ms` must exceed it; allow additional
+time for building the ELF and analyzing the VCD.
 
-The backend runs `vcdtogglerate <VCD> --target-scope <scope>`, optionally with
-`--exclude-signal-file <path>`. It maximizes the reported `toggle_coverage`
-fraction and records `toggle_activity` in signal-level changes per simulated
-second. The analyzer uses the last change of a counted signal as its time
-denominator; it may report zero for an empty selection or missing timing.
-Keep the scope, exclusions and simulation window consistent between runs.
-Use separate solutions directories for hardware, simulation and changed
-simulation configurations, since their scores are not comparable.
+After the simulator finishes, the fuzzer analyzes the VCD in-process with the
+integrated `vcdtoggle` engine (`src/vcdtoggle/`, vendored from the
+`vcdtogglemeasure` project): a single pass over the trace for the kept signals
+below `--target-scope` (optionally minus `--exclude-signal-file <path>`). Each
+run produces a trace map — one saturating toggle count per traced signal — plus
+the scalar metrics: `toggle_activity` in signal-level changes per simulated
+second (using the last change of a counted signal as the time denominator) and
+`toggle_coverage`, the fraction of bits of counted bit-vector variables that
+changed at least once. The trace map is the primary feedback: an input is
+interesting when it raises any map entry above everything seen before.
+`toggle_activity` is the secondary score used for best tracking; both may be
+zero for an empty selection or missing timing. Keep the scope, exclusions and
+simulation window consistent between runs. Use separate solutions directories
+for hardware, simulation and changed simulation configurations, since their
+scores are not comparable.
 
 For Chipyard, provide `+max-cycles=<limit>`, `+vcdfile={vcd}` and, when
 using fast loading, `+loadmem={elf}` as simulator arguments, with `{elf}`
@@ -167,23 +175,24 @@ SIGABRT by default, then analyzes the VCD; other nonzero exits and wall-clock
 timeouts remain failures. Successful simulator exits are also accepted, so a
 program finishing early can yield a shorter trace. Simulator core dumps are
 disabled. The limit must be configured explicitly and is checked after reset.
-An abort may leave a partially flushed VCD: a successful analyzer result does
+An abort may leave a partially flushed VCD: a successful analysis result does
 not prove the trace includes every cycle. Validate the trace window for the
 specific simulator and workload before comparing scores.
 
 Each evaluation creates a fresh `numeric-fuzzer-vcd-*` trace directory under `vcd_dir`
 (`--vcd-dir`, TOML `vcd_dir`) if configured, otherwise inside the simulator working
 directory — never the system temp directory, which is often too small for
-multi-gigabyte VCDs. It is removed after analysis. The simulator and analyzer
-subprocesses likewise run with `TMPDIR` set to the simulator working directory.
+multi-gigabyte VCDs. The worker creates it before spawning the supervisor and
+removes it after the in-process analysis. The simulator
+subprocess likewise runs with `TMPDIR` set to the simulator working directory.
 Each evaluation uses a separate
-supervisor that owns the temporary VCD directory and monitors a parent-liveness pipe. On a subprocess timeout, or if the fuzzer
-exits during simulation or analysis, it terminates the active process group,
-reaps the direct child and removes the temporary directory. The supervisor is
+supervisor that runs the simulator and monitors a parent-liveness pipe. On a
+simulator timeout, or if the fuzzer exits during simulation, it terminates the
+active process group and reaps the direct child. The supervisor is
 isolated from the fuzzer's terminal process group, so an interrupt to the fuzzer
-also closes the pipe. Configure LibAFL's outer timeout above build time plus both
-subprocess deadlines. The existing decoder and `make` still have no individual
-timeouts and are not supervised by this mechanism.
+also closes the pipe. Configure LibAFL's outer timeout above build time plus the
+simulator deadline and the analysis time. The existing decoder and `make` still
+have no individual timeouts and are not supervised by this mechanism.
 
 Per-run VCD directories are named `numeric-fuzzer-vcd-<host>-<pid>-*`; at the start
 of every evaluation, leftovers of dead same-host processes (e.g. a supervisor
@@ -227,15 +236,16 @@ broker process (the one you start) owns the monitor and aggregates per-client
 stats; each forked worker is pinned to a core from the process affinity mask and
 runs with its own `LlmpRestartingEventManager`. Workers exchange interesting
 inputs instantly over shared memory (no polling delay); each imported input is
-re-evaluated by the receiving worker and added to its corpus if it beats the
-local best. If a worker crashes, the restarting manager respawns it
-automatically with its serialized state.
+re-evaluated by the receiving worker and added to its corpus if its trace map
+has coverage the worker has not seen before. If a worker crashes, the restarting
+manager respawns it automatically with its serialized state.
 
 Each worker keeps its own LibAFL corpus and local `best.S` under
 `<solutions_path>/worker-0000`, `worker-0001`, and so on. The shared
 `<solutions_path>/parallel-exchange/global-best.txt` records the full-precision
-score, activity, worker, and paths to the corresponding immutable input and
-assembly. Global improvements are also printed on stderr. The exchange directory
+toggle activity (the score), the toggle coverage, the worker, and paths to the
+corresponding immutable input and assembly. Global improvements are also
+printed on stderr. The exchange directory
 must not already exist: use a fresh solutions path for each run, especially if
 simulation settings change. Snippet archives use the same per-worker
 subdirectories. Logging is initialized before forking, so the broker and all

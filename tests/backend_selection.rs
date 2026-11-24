@@ -20,20 +20,16 @@ fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
     )
     .unwrap();
     let simulator = root.join("simulator");
-    let analyzer = root.join("analyzer");
     fs::write(
         &simulator,
-        "#!/bin/sh\ntest -f \"$1\" || exit 1\nprintf 'wave' > \"$2\"\n",
+        format!(
+            "#!/bin/sh\ntest -f \"$1\" || exit 1\ncp \"{}/trace.vcd\" \"$2\"\n",
+            root.display()
+        ),
     )
     .unwrap();
-    fs::write(
-        &analyzer,
-        "#!/bin/sh\nprintf 'toggle_activity=12\\ntoggle_coverage=0.5\\n'\n",
-    )
-    .unwrap();
-    for path in [&simulator, &analyzer] {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-    }
+    fs::set_permissions(&simulator, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(root.join("trace.vcd"), TRACE_VCD).unwrap();
     let solutions = root.join("solutions");
     let log = root.join("fuzzer.log");
     let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
@@ -51,8 +47,6 @@ fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
         .arg(&log)
         .arg("--simulator-path")
         .arg(&simulator)
-        .arg("--analyzer-path")
-        .arg(&analyzer)
         .args([
             "--target-scope",
             "TOP.dut",
@@ -87,7 +81,23 @@ fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
     );
 }
 
-fn simulation_fixture(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+/// A minimal VCD with one 1-bit signal toggling at #10 (1ns timescale), so the
+/// in-process analysis yields activity 1e8 toggles/s and coverage 1.0.
+const TRACE_VCD: &str = "\
+$timescale 1ns $end
+$scope module TOP $end
+$scope module dut $end
+$var wire 1 ! value $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+#10
+1!
+";
+
+fn simulation_fixture(root: &std::path::Path) -> std::path::PathBuf {
     let build = root.join("build");
     fs::create_dir_all(build.join("src")).unwrap();
     fs::write(
@@ -96,28 +106,24 @@ fn simulation_fixture(root: &std::path::Path) -> (std::path::PathBuf, std::path:
     )
     .unwrap();
     let simulator = root.join("simulator");
-    let analyzer = root.join("analyzer");
     fs::write(
         &simulator,
-        "#!/bin/sh\ntest -f \"$1\" || exit 1\nprintf 'wave' > \"$2\"\n",
+        format!(
+            "#!/bin/sh\ntest -f \"$1\" || exit 1\ncp \"{}/trace.vcd\" \"$2\"\n",
+            root.display()
+        ),
     )
     .unwrap();
-    fs::write(
-        &analyzer,
-        "#!/bin/sh\nprintf 'toggle_activity=12\\ntoggle_coverage=0.5\\n'\n",
-    )
-    .unwrap();
-    for path in [&simulator, &analyzer] {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    (simulator, analyzer)
+    fs::set_permissions(&simulator, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(root.join("trace.vcd"), TRACE_VCD).unwrap();
+    simulator
 }
 
 #[test]
 fn log_level_and_log_monitor_write_progress_to_the_log_file() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let (simulator, analyzer) = simulation_fixture(root);
+    let simulator = simulation_fixture(root);
     let solutions = root.join("solutions");
     let log = root.join("fuzzer.log");
     let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
@@ -139,8 +145,6 @@ fn log_level_and_log_monitor_write_progress_to_the_log_file() {
         .arg("log")
         .arg("--simulator-path")
         .arg(&simulator)
-        .arg("--analyzer-path")
-        .arg(&analyzer)
         .args([
             "--target-scope",
             "TOP.dut",
@@ -173,11 +177,11 @@ fn log_level_and_log_monitor_write_progress_to_the_log_file() {
         output.status,
         String::from_utf8_lossy(&output.stderr),
     );
-    // A successful simulation and its parsed metrics are visible at info level.
-    assert!(log.contains("Current toggle coverage"), "log: {log}");
-    // --log-level debug turns on the per-run simulation detail.
+    // A successful simulation and its analyzed metrics are visible at info level.
+    assert!(log.contains("Current toggle activity"), "log: {log}");
+    // --log-level debug turns on the per-run simulation and analysis detail.
     assert!(log.contains("Running simulator"), "log: {log}");
-    assert!(log.contains("Analyzer exited"), "log: {log}");
+    assert!(log.contains("VCD analysis"), "log: {log}");
     // LibAFL's own `log` records are bridged into the same file.
     assert!(
         log.lines().any(|line| line.contains("libafl")),

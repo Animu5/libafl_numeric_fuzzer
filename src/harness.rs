@@ -19,7 +19,7 @@ pub struct Harness {
 
 impl Harness {
     pub fn run(&mut self, input: &BytesInput) -> ExitKind {
-        self.shared.evaluation.set(None);
+        *self.shared.evaluation.borrow_mut() = None;
         *self.shared.assembly.borrow_mut() = None;
         self.shared.input.borrow_mut().clear();
 
@@ -44,12 +44,11 @@ impl Harness {
                     Metric::PowerDelta => {
                         tracing::info!("Current measurement: {} W.", result.score())
                     }
-                    Metric::ToggleCoverage => tracing::info!(
-                        "Current toggle coverage: {}; activity: {} changes/s.",
+                    Metric::ToggleActivity => tracing::info!(
+                        "Current toggle activity: {} changes/s; coverage: {}; map slots: {}.",
                         result.score(),
-                        result
-                            .toggle_activity_per_second()
-                            .expect("coverage has activity")
+                        result.toggle_coverage().unwrap_or(0.0),
+                        result.trace_map().map_or(0, <[u8]>::len)
                     ),
                 }
                 *self.shared.assembly.borrow_mut() =
@@ -58,7 +57,7 @@ impl Harness {
                     .input
                     .borrow_mut()
                     .extend_from_slice(bytes.to_slice());
-                self.shared.evaluation.set(Some(result));
+                *self.shared.evaluation.borrow_mut() = Some(result);
             }
             Err(EvaluationError::Candidate(message)) => {
                 tracing::warn!(
@@ -129,20 +128,23 @@ mod tests {
             shared: shared.clone(),
         };
         harness.run(&BytesInput::new(b"first".to_vec()));
-        assert_eq!(shared.evaluation.get().unwrap().score(), 2.0);
+        assert_eq!(
+            shared.evaluation.borrow().as_ref().unwrap().score(),
+            2.0
+        );
         assert!(shared.assembly.borrow().as_ref().unwrap().contains("first"));
         harness.run(&BytesInput::new(b"second".to_vec()));
-        assert!(shared.evaluation.get().is_none());
+        assert!(shared.evaluation.borrow().is_none());
         assert!(shared.assembly.borrow().is_none());
         harness.builder =
             SnippetBuilder::new(dir.clone(), "/bin/false".into(), "/opt/riscv".into());
         harness.run(&BytesInput::new(b"bad".to_vec()));
-        assert!(shared.evaluation.get().is_none());
+        assert!(shared.evaluation.borrow().is_none());
         assert!(shared.assembly.borrow().is_none());
         assert_eq!(paths.borrow().len(), 2);
         harness.builder = SnippetBuilder::new(dir.clone(), "/bin/cat".into(), "/opt/riscv".into());
         harness.run(&BytesInput::new(b"third".to_vec()));
-        assert!(shared.evaluation.get().is_none());
+        assert!(shared.evaluation.borrow().is_none());
         assert_eq!(shared.fatal.borrow().as_deref(), Some("unrecoverable"));
         assert_eq!(paths.borrow().len(), 3);
         std::fs::remove_dir_all(dir).unwrap();

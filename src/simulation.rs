@@ -1,4 +1,5 @@
-use crate::evaluation::{Evaluation, EvaluationBackend, EvaluationError, parse_toggle_metrics};
+use crate::evaluation::{Evaluation, EvaluationBackend, EvaluationError};
+use crate::vcdtoggle::{self, excludes::Excluded};
 #[allow(unused_imports)]
 use std::{
     ffi::{OsStr, OsString},
@@ -97,18 +98,17 @@ pub struct SimulationConfig {
     pub simulator: PathBuf,
     pub simulator_args: Vec<OsString>,
     pub working_dir: PathBuf,
-    pub analyzer: PathBuf,
     pub target_scope: String,
     pub exclude_signal_file: Option<PathBuf>,
     /// Parent directory for the per-run VCD directory. Defaults to `working_dir` so large
     /// traces are not written to the (often size-limited) system temp directory.
     pub vcd_dir: Option<PathBuf>,
     pub simulator_timeout: Duration,
-    pub analyzer_timeout: Duration,
 }
 
 pub struct SimulationBackend {
     config: SimulationConfig,
+    excluded: Excluded,
     candidate_failures: u32,
     measurement_failures: u32,
 }
@@ -119,7 +119,6 @@ impl SimulationBackend {
             EvaluationError::Fatal(format!("Cannot resolve current directory: {e}"))
         })?;
         config.simulator = absolute(&cwd, &config.simulator);
-        config.analyzer = absolute(&cwd, &config.analyzer);
         config.working_dir = absolute(&cwd, &config.working_dir);
         config.exclude_signal_file = config.exclude_signal_file.map(|p| absolute(&cwd, &p));
         config.vcd_dir = config.vcd_dir.map(|p| absolute(&cwd, &p));
@@ -129,22 +128,17 @@ impl SimulationBackend {
                 config.working_dir.display()
             )));
         }
-        for (name, path) in [
-            ("simulator", &config.simulator),
-            ("analyzer", &config.analyzer),
-        ] {
-            if !path.is_file() {
-                return Err(EvaluationError::Fatal(format!(
-                    "{name} executable is not a file: {}",
-                    path.display()
-                )));
-            }
+        if !config.simulator.is_file() {
+            return Err(EvaluationError::Fatal(format!(
+                "simulator executable is not a file: {}",
+                config.simulator.display()
+            )));
         }
         if let Some(path) = &config.exclude_signal_file
             && !path.is_file()
         {
             return Err(EvaluationError::Fatal(format!(
-                "Analyzer exclusion file is not a file: {}",
+                "Exclusion file is not a file: {}",
                 path.display()
             )));
         }
@@ -157,14 +151,10 @@ impl SimulationBackend {
             )));
         }
         if config.target_scope.trim().is_empty() {
-            return Err(EvaluationError::Fatal(
-                "Analyzer target scope is empty".into(),
-            ));
+            return Err(EvaluationError::Fatal("Target scope is empty".into()));
         }
-        if config.simulator_timeout.is_zero() || config.analyzer_timeout.is_zero() {
-            return Err(EvaluationError::Fatal(
-                "Process timeouts must be nonzero".into(),
-            ));
+        if config.simulator_timeout.is_zero() {
+            return Err(EvaluationError::Fatal("Simulator timeout must be nonzero".into()));
         }
         if !config.simulator_args.iter().any(|a| contains(a, b"{elf}"))
             || !config.simulator_args.iter().any(|a| contains(a, b"{vcd}"))
@@ -173,13 +163,22 @@ impl SimulationBackend {
                 "Simulator arguments must include both {elf} and {vcd} placeholders".into(),
             ));
         }
+        let excluded = vcdtoggle::excludes::load(config.exclude_signal_file.as_deref())
+            .map_err(|e| {
+                EvaluationError::Fatal(format!(
+                    "Cannot load exclusion file {:?}: {e}",
+                    config.exclude_signal_file
+                ))
+            })?;
         Ok(Self {
             config,
+            excluded,
             candidate_failures: 0,
             measurement_failures: 0,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn run_direct(
         &self,
         elf: &Path,
@@ -191,6 +190,19 @@ impl SimulationBackend {
                 elf.display()
             ))
         })?;
+        let (work, vcd) = self.prepare_trace_dir()?;
+        let result = self
+            .run_simulator(&elf, &vcd, cancelled)
+            .and_then(|()| self.analyze_vcd(&vcd));
+        work.close().map_err(|e| {
+            EvaluationError::Fatal(format!("Cannot clean up simulation artifacts: {e}"))
+        })?;
+        result
+    }
+
+    /// Creates the per-run trace directory (sweeping leftovers of dead same-host
+    /// processes first) and returns it together with the VCD path inside it.
+    fn prepare_trace_dir(&self) -> Result<(tempfile::TempDir, PathBuf), EvaluationError> {
         let parent = self
             .config
             .vcd_dir
@@ -211,19 +223,17 @@ impl SimulationBackend {
             })?;
         let run_dir = std::fs::canonicalize(work.path())
             .map_err(|e| EvaluationError::Fatal(format!("Cannot resolve VCD directory: {e}")))?;
-        let result = self.run_in(&elf, &run_dir.join("trace.vcd"), cancelled);
-        work.close().map_err(|e| {
-            EvaluationError::Fatal(format!("Cannot clean up simulation artifacts: {e}"))
-        })?;
-        result
+        Ok((work, run_dir.join("trace.vcd")))
     }
 
-    fn run_in(
+    /// Runs the simulator on `elf`, writing the trace to `vcd`, and classifies the outcome.
+    #[cfg(test)]
+    fn run_simulator(
         &self,
         elf: &Path,
         vcd: &Path,
         cancelled: &AtomicBool,
-    ) -> Result<Evaluation, EvaluationError> {
+    ) -> Result<(), EvaluationError> {
         let args: Vec<OsString> = self
             .config
             .simulator_args
@@ -238,35 +248,13 @@ impl SimulationBackend {
             elf.display(),
             vcd.display()
         );
-        let mut simulator = Command::new(&self.config.simulator);
-        simulator
-            .current_dir(&self.config.working_dir)
-            // Keep subprocess temp files off the size-limited /tmp.
-            .env("TMPDIR", &self.config.working_dir)
-            .args(&args);
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                simulator.pre_exec(|| {
-                    let mut limits = std::mem::MaybeUninit::<libc::rlimit>::uninit();
-                    if libc::getrlimit(libc::RLIMIT_CORE, limits.as_mut_ptr()) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    let mut limits = limits.assume_init();
-                    limits.rlim_cur = 0;
-                    if libc::setrlimit(libc::RLIMIT_CORE, &limits) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-        let output = crate::supervisor::run_process(
-            &mut simulator,
+        let output = crate::supervisor::run_simulator_process(
+            &self.config.simulator,
+            &self.config.working_dir,
+            &args,
             self.config.simulator_timeout,
             cancelled,
-        )
-        .map_err(|e| EvaluationError::Fatal(format!("Simulator process: {e}")))?;
+        )?;
         tracing::debug!(
             "Simulator exited {} (timed_out={}); VCD {} exists: {}",
             output.status,
@@ -274,127 +262,77 @@ impl SimulationBackend {
             vcd.display(),
             vcd.is_file()
         );
-        if output.timed_out {
-            return Err(EvaluationError::Candidate(format!(
-                "Simulator timed out: {}",
-                output.diagnostic()
-            )));
-        }
-        if !output.status.success() && !output.chipyard_cycle_limit() {
-            return Err(EvaluationError::Candidate(format!(
-                "Simulator exited {}: {}",
-                output.status,
-                output.diagnostic()
-            )));
-        }
-        if !vcd.is_file() {
-            return Err(EvaluationError::Measurement(format!(
-                "Simulator did not produce VCD {}: {}",
-                vcd.display(),
-                output.diagnostic()
-            )));
-        }
-
-        let mut analyzer = Command::new(&self.config.analyzer);
-        analyzer
-            .current_dir(&self.config.working_dir)
-            .env("TMPDIR", &self.config.working_dir)
-            .arg(vcd)
-            .arg("--target-scope")
-            .arg(&self.config.target_scope);
-        if let Some(path) = &self.config.exclude_signal_file {
-            analyzer.arg("--exclude-signal-file").arg(path);
-        }
-        tracing::debug!(
-            "Running analyzer {:?} on VCD {} with target scope {:?} (exclude file: {:?}) in {:?}",
-            self.config.analyzer,
-            vcd.display(),
-            self.config.target_scope,
-            self.config.exclude_signal_file,
-            self.config.working_dir
-        );
-        let output =
-            crate::supervisor::run_process(&mut analyzer, self.config.analyzer_timeout, cancelled)
-                .map_err(|e| EvaluationError::Fatal(format!("Analyzer process: {e}")))?;
-        tracing::debug!(
-            "Analyzer exited {} (timed_out={}), stdout {} bytes, stderr {} bytes",
-            output.status,
-            output.timed_out,
-            output.stdout.len(),
-            output.stderr.len()
-        );
-        if output.timed_out {
-            return Err(EvaluationError::Measurement(format!(
-                "Analyzer timed out: {}",
-                output.diagnostic()
-            )));
-        }
-        if !output.status.success() {
-            return Err(EvaluationError::Measurement(format!(
-                "Analyzer exited {}: {}",
-                output.status,
-                output.diagnostic()
-            )));
-        }
-        if output.stdout_truncated {
-            return Err(EvaluationError::Measurement(
-                "Analyzer stdout exceeded the output limit".into(),
-            ));
-        }
-        if !output.stderr.is_empty() {
-            eprintln!(
-                "Analyzer stderr: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        let stdout = std::str::from_utf8(&output.stdout).map_err(|e| {
-            EvaluationError::Measurement(format!("Analyzer stdout is not UTF-8: {e}"))
-        })?;
-        parse_toggle_metrics(stdout)
+        crate::supervisor::classify_simulator_output(&output, vcd)
     }
 
+    /// Analyzes a finished trace in-process with the integrated VCD engine and builds
+    /// the evaluation: the trace map plus toggle activity (score) and coverage.
+    fn analyze_vcd(&self, vcd: &Path) -> Result<Evaluation, EvaluationError> {
+        tracing::debug!(
+            "Analyzing VCD {} in-process (scope {:?}, {} exclusions)",
+            vcd.display(),
+            self.config.target_scope,
+            self.excluded.len()
+        );
+        let metrics = vcdtoggle::analyze(vcd, &self.config.target_scope, &self.excluded).map_err(
+            |e| {
+                EvaluationError::Measurement(format!("VCD analysis of {} failed: {e}", vcd.display()))
+            },
+        )?;
+        let evaluation =
+            Evaluation::toggle_metrics(metrics.activity(), metrics.coverage(), metrics.trace_map())?;
+        tracing::debug!(
+            "VCD analysis: toggles={} activity={}/s coverage={} map_slots={}",
+            metrics.total_toggles,
+            evaluation.score(),
+            evaluation.toggle_coverage().unwrap_or(0.0),
+            evaluation.trace_map().map_or(0, <[u8]>::len)
+        );
+        Ok(evaluation)
+    }
+
+    /// Production path: the simulator runs in the private supervisor child (timeouts,
+    /// process-group cleanup, parent-liveness watch); the VCD is then analyzed
+    /// in-process here so the trace map stays in this worker.
     #[cfg(not(test))]
     fn run(&self, elf: &Path) -> Result<Evaluation, EvaluationError> {
         use std::os::unix::process::CommandExt;
+        let elf = std::fs::canonicalize(elf).map_err(|e| {
+            EvaluationError::Fatal(format!(
+                "Cannot resolve candidate ELF {}: {e}",
+                elf.display()
+            ))
+        })?;
+        let (work, vcd) = self.prepare_trace_dir()?;
+        let args: Vec<OsString> = self
+            .config
+            .simulator_args
+            .iter()
+            .map(|arg| expand(arg, &elf, &vcd))
+            .collect();
         let executable = std::env::current_exe().map_err(|e| {
             EvaluationError::Fatal(format!("Cannot locate supervisor executable: {e}"))
         })?;
         let mut command = Command::new(executable);
         command
             .arg("--internal-simulation-supervisor")
-            .arg(elf)
+            .arg(&elf)
             .arg(&self.config.simulator)
             .arg(&self.config.working_dir)
-            .arg(&self.config.analyzer)
-            .arg(&self.config.target_scope)
-            .arg(
-                self.config
-                    .exclude_signal_file
-                    .as_deref()
-                    .unwrap_or_else(|| Path::new("")),
-            )
-            .arg(
-                self.config
-                    .vcd_dir
-                    .as_deref()
-                    .unwrap_or_else(|| Path::new("")),
-            )
+            .arg(&vcd)
             .arg(self.config.simulator_timeout.as_secs().to_string())
             .arg(self.config.simulator_timeout.subsec_nanos().to_string())
-            .arg(self.config.analyzer_timeout.as_secs().to_string())
-            .arg(self.config.analyzer_timeout.subsec_nanos().to_string())
-            .args(&self.config.simulator_args)
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
         tracing::debug!(
-            "Starting simulation supervisor for ELF {} (simulator {:?}, working dir {:?}, analyzer {:?}, args {:?})",
+            "Starting simulation supervisor for ELF {} (simulator {:?}, working dir {:?}, args {:?})",
             elf.display(),
             self.config.simulator,
             self.config.working_dir,
-            self.config.analyzer,
-            self.config.simulator_args
+            args
         );
         let mut child = command.spawn().map_err(|e| {
             EvaluationError::Fatal(format!("Cannot start simulation supervisor: {e}"))
@@ -412,20 +350,19 @@ impl SimulationBackend {
             elf.display(),
             output.status
         );
-        match output.status.code() {
-            Some(0) => {
-                let stdout = std::str::from_utf8(&output.stdout).map_err(|e| {
-                    EvaluationError::Fatal(format!("Invalid supervisor output: {e}"))
-                })?;
-                parse_toggle_metrics(stdout)
-            }
+        let result = match output.status.code() {
+            Some(0) => self.analyze_vcd(&vcd),
             Some(10) => Err(EvaluationError::Candidate(stderr.into_owned())),
             Some(11) => Err(EvaluationError::Measurement(stderr.into_owned())),
             _ => Err(EvaluationError::Fatal(format!(
                 "Simulation supervisor exited {}: {stderr}",
                 output.status
             ))),
-        }
+        };
+        work.close().map_err(|e| {
+            EvaluationError::Fatal(format!("Cannot clean up simulation artifacts: {e}"))
+        })?;
+        result
     }
 
     #[cfg(test)]
@@ -506,16 +443,43 @@ pub(crate) fn expand(arg: &OsStr, elf: &Path, vcd: &Path) -> OsString {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::evaluation::Metric;
     use std::{fs, os::unix::fs::PermissionsExt, time::Instant};
 
     static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Minimal but real VCD: signal `value` toggles twice (0→1→0), the 4-bit vector
+    /// `nibble` changes once from b0000 to b0101 (2 of its 4 bits). Last change at #20
+    /// with a 1ns timescale, so activity = 3 toggles / 20ns = 1.5e8 toggles/s.
+    /// Bit-level coverage counts all 5 bits (`value` is a 1-bit vector), of which 3
+    /// changed: 0.6.
+    const FIXTURE_VCD: &str = "\
+$timescale 1ns $end
+$scope module TOP $end
+$scope module dut $end
+$var wire 1 ! value $end
+$var wire 4 \" nibble $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0000 \"
+#10
+1!
+b0101 \"
+#20
+0!
+";
+
+    const FIXTURE_ACTIVITY: f64 = 150_000_000.0;
+    const FIXTURE_COVERAGE: f64 = 0.6;
 
     struct Fixture {
         _guard: std::sync::MutexGuard<'static, ()>,
         dir: tempfile::TempDir,
         elf: PathBuf,
         simulator: PathBuf,
-        analyzer: PathBuf,
     }
 
     impl Fixture {
@@ -524,14 +488,13 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let elf = dir.path().join("candidate with space.elf");
             let simulator = dir.path().join("simulator");
-            let analyzer = dir.path().join("analyzer");
             fs::write(&elf, b"ELF").unwrap();
+            fs::write(dir.path().join("fixture.vcd"), FIXTURE_VCD).unwrap();
             Self {
                 _guard: guard,
                 dir,
                 elf,
                 simulator,
-                analyzer,
             }
         }
 
@@ -552,12 +515,10 @@ mod tests {
                 simulator: self.simulator.clone(),
                 simulator_args: vec!["{elf}".into(), "{vcd}".into()],
                 working_dir: self.dir.path().to_owned(),
-                analyzer: self.analyzer.clone(),
                 target_scope: "TOP.dut".into(),
                 exclude_signal_file: None,
                 vcd_dir: None,
                 simulator_timeout: Duration::from_secs(2),
-                analyzer_timeout: Duration::from_secs(2),
             }
         }
 
@@ -567,29 +528,31 @@ mod tests {
                 r#"
 test -f "$1" || exit 3
 printf '%s' "$2" > vcd-path
-printf 'waveform' > "$2"
+cp fixture.vcd "$2"
 printf '%s' "${TMPDIR:-}" > tmpdir
 "#,
             );
-            Self::script(
-                &self.analyzer,
-                r#"
-test "$(cat "$1")" = waveform || exit 4
-test "$2" = "--target-scope" && test "$3" = "TOP.dut" || exit 5
-printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
-"#,
-            );
+        }
+
+        /// Asserts the fixture's metrics: activity 1.5e8, coverage 0.5, and a two-entry
+        /// trace map with saturating per-signal toggle counts {1, 2}.
+        fn assert_fixture_metrics(result: &Evaluation) {
+            assert_eq!(result.metric(), Metric::ToggleActivity);
+            assert_eq!(result.score(), FIXTURE_ACTIVITY);
+            assert_eq!(result.toggle_coverage(), Some(FIXTURE_COVERAGE));
+            let mut map = result.trace_map().unwrap().to_vec();
+            map.sort_unstable();
+            assert_eq!(map, vec![1, 2]);
         }
     }
 
     #[test]
-    fn runs_simulator_then_analyzer_with_fresh_cleaned_trace() {
+    fn runs_simulator_and_analyzes_trace_with_fresh_cleaned_trace() {
         let fixture = Fixture::new();
         fixture.success_scripts();
         let mut backend = SimulationBackend::new(fixture.config()).unwrap();
         let result = backend.evaluate(&fixture.elf).unwrap();
-        assert_eq!(result.score(), 0.75);
-        assert_eq!(result.toggle_activity_per_second(), Some(1200.0));
+        Fixture::assert_fixture_metrics(&result);
         let first = fs::read_to_string(fixture.dir.path().join("vcd-path")).unwrap();
         assert!(!Path::new(&first).exists());
         backend.evaluate(&fixture.elf).unwrap();
@@ -682,13 +645,14 @@ printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
             Fixture::script(
                 &fixture.simulator,
                 &format!(
-                    "printf waveform > \"$2\"\n\
+                    "cp fixture.vcd \"$2\"\n\
                      head -c 70000 /dev/zero | tr '\\0' x >&2\n\
                      printf '\\n*** FAILED ***   (timeout) after     1001 simulation cycles\\n' >&2\n\
                      {termination}"
                 ),
             );
-            assert_eq!(backend.evaluate(&fixture.elf).unwrap().score(), 0.75);
+            let result = backend.evaluate(&fixture.elf).unwrap();
+            Fixture::assert_fixture_metrics(&result);
         }
 
         for (marker, termination) in [
@@ -704,7 +668,7 @@ printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
         ] {
             Fixture::script(
                 &fixture.simulator,
-                &format!("printf waveform > \"$2\"; echo '{marker}' >&2; {termination}"),
+                &format!("cp fixture.vcd \"$2\"; echo '{marker}' >&2; {termination}"),
             );
             assert!(matches!(
                 backend.evaluate(&fixture.elf),
@@ -717,33 +681,32 @@ printf 'toggle_activity=1200\ntoggle_coverage=0.75\n'
     fn passes_placeholders_within_arguments_and_exclusions() {
         let fixture = Fixture::new();
         let excluded = fixture.dir.path().join("excluded signals.txt");
-        fs::write(&excluded, "signal\n").unwrap();
+        fs::write(&excluded, "TOP.dut.nibble\n").unwrap();
         Fixture::script(
             &fixture.simulator,
             r#"
 case "$1" in --elf=*) elf=${1#--elf=};; *) exit 2;; esac
 case "$2" in --vcd=*) vcd=${2#--vcd=};; *) exit 2;; esac
 test -f "$elf" || exit 3
-printf 'waveform' > "$vcd"
-"#,
-        );
-        Fixture::script(
-            &fixture.analyzer,
-            r#"
-test "$4" = "--exclude-signal-file" && test -f "$5" || exit 4
-printf 'toggle_activity=0\ntoggle_coverage=1\n'
+cp fixture.vcd "$vcd"
 "#,
         );
         let mut config = fixture.config();
         config.simulator_args = vec!["--elf={elf}".into(), "--vcd={vcd}".into()];
         config.exclude_signal_file = Some(excluded);
+        let result = SimulationBackend::new(config)
+            .unwrap()
+            .evaluate(&fixture.elf)
+            .unwrap();
+        // With `nibble` excluded only `value` counts: 2 toggles, and its single bit
+        // changed, so coverage is 1.0.
+        assert_eq!(result.metric(), Metric::ToggleActivity);
+        assert_eq!(result.score(), 100_000_000.0);
+        assert_eq!(result.toggle_coverage(), Some(1.0));
+        let map = result.trace_map().unwrap();
         assert_eq!(
-            SimulationBackend::new(config)
-                .unwrap()
-                .evaluate(&fixture.elf)
-                .unwrap()
-                .score(),
-            1.0
+            map.iter().copied().filter(|&b| b > 0).collect::<Vec<_>>(),
+            vec![2]
         );
     }
 
@@ -772,7 +735,7 @@ printf 'toggle_activity=0\ntoggle_coverage=1\n'
     }
 
     #[test]
-    fn rejects_missing_trace_and_invalid_analyzer_output() {
+    fn rejects_missing_trace_and_unanalyzable_vcd() {
         let fixture = Fixture::new();
         fixture.success_scripts();
         Fixture::script(&fixture.simulator, "exit 0");
@@ -788,16 +751,14 @@ printf 'toggle_activity=0\ntoggle_coverage=1\n'
             backend.evaluate(&fixture.elf),
             Err(EvaluationError::Fatal(_))
         ));
-        fixture.success_scripts();
-        Fixture::script(
-            &fixture.analyzer,
-            "printf 'toggle_coverage=NaN\\ntoggle_activity=1\\n'",
-        );
+        // A trace that is not a waveform at all fails the in-process analysis.
+        Fixture::script(&fixture.simulator, "printf 'waveform' > \"$2\"; printf '%s' \"$2\" > vcd-path");
         let mut backend = SimulationBackend::new(fixture.config()).unwrap();
-        assert!(matches!(
-            backend.evaluate(&fixture.elf),
-            Err(EvaluationError::Measurement(_))
-        ));
+        let result = backend.evaluate(&fixture.elf);
+        assert!(
+            matches!(result, Err(EvaluationError::Measurement(_))),
+            "{result:?}"
+        );
         let vcd = fs::read_to_string(fixture.dir.path().join("vcd-path")).unwrap();
         assert!(!Path::new(&vcd).exists());
     }
@@ -830,29 +791,6 @@ printf 'toggle_activity=0\ntoggle_coverage=1\n'
     }
 
     #[test]
-    fn analyzer_failure_and_timeout_are_measurement_errors() {
-        let fixture = Fixture::new();
-        fixture.success_scripts();
-        Fixture::script(&fixture.analyzer, "echo analyzer-error >&2; exit 1");
-        let mut backend = SimulationBackend::new(fixture.config()).unwrap();
-        let error = backend.evaluate(&fixture.elf).unwrap_err();
-        assert!(matches!(error, EvaluationError::Measurement(_)));
-        assert!(error.to_string().contains("analyzer-error"));
-
-        Fixture::script(&fixture.analyzer, "sleep 30 & wait");
-        let mut config = fixture.config();
-        config.analyzer_timeout = Duration::from_millis(100);
-        let start = Instant::now();
-        let error = SimulationBackend::new(config)
-            .unwrap()
-            .evaluate(&fixture.elf)
-            .unwrap_err();
-        assert!(matches!(error, EvaluationError::Measurement(_)));
-        assert!(error.to_string().contains("timed out"));
-        assert!(start.elapsed() < Duration::from_secs(3));
-    }
-
-    #[test]
     fn successful_run_resets_failure_counters() {
         let fixture = Fixture::new();
         fixture.success_scripts();
@@ -871,36 +809,20 @@ printf 'toggle_activity=0\ntoggle_coverage=1\n'
     }
 
     #[test]
-    fn real_analyzer_smoke_test_when_configured() {
-        let Some(analyzer) = std::env::var_os("VCDTOGGLERATE_TEST_BINARY") else {
-            return;
-        };
+    fn unknown_target_scope_is_a_measurement_error() {
         let fixture = Fixture::new();
-        fs::write(
-            fixture.dir.path().join("input.vcd"),
-            "\
-$timescale 1ns $end
-$scope module TOP $end
-$scope module dut $end
-$var wire 1 ! value $end
-$upscope $end
-$upscope $end
-$enddefinitions $end
-#0
-0!
-#10
-1!
-",
-        )
-        .unwrap();
-        Fixture::script(&fixture.simulator, "cp input.vcd \"$2\"");
+        fixture.success_scripts();
         let mut config = fixture.config();
-        config.analyzer = analyzer.into();
-        let result = SimulationBackend::new(config)
-            .unwrap()
-            .evaluate(&fixture.elf)
-            .unwrap();
-        assert_eq!(result.score(), 1.0);
-        assert!(result.toggle_activity_per_second().unwrap() > 0.0);
+        config.target_scope = "TOP.missing".into();
+        let mut backend = SimulationBackend::new(config).unwrap();
+        let result = backend.evaluate(&fixture.elf);
+        assert!(
+            matches!(result, Err(EvaluationError::Measurement(_))),
+            "{result:?}"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("TOP.missing"),
+            "error names the missing scope"
+        );
     }
 }

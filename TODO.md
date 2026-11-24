@@ -8,11 +8,11 @@
 - Replace the placeholder limit of 10,000,000 cycles with the count for one
   simulated millisecond. Derive it from the simulator's clock period and verify
   the resulting measurement window, including reset behavior.
-- Configure and verify the target scope, signal exclusions, and simulator,
-  analyzer, and outer execution timeouts.
+- Configure and verify the target scope, signal exclusions, and the simulator
+  and outer execution timeouts.
 - Test parallel fuzzing with the real simulator, beginning with a small worker
   count and scaling to 200. Check resource usage, throughput, input exchange,
-  global-best reporting, and workspace isolation.
+  trace-map coverage growth, global-best reporting, and workspace isolation.
 The cycle-limit VCD was validated during analyzer validation.
 
 ## External Tool Timeouts

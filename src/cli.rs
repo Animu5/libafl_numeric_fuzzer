@@ -112,15 +112,11 @@ pub struct Args {
     #[arg(long, allow_hyphen_values = true)]
     simulator_arg: Option<Vec<String>>,
 
-    /// Path to the vcdtogglerate executable
-    #[arg(long)]
-    analyzer_path: Option<PathBuf>,
-
-    /// VCD scope passed to vcdtogglerate
+    /// VCD scope analyzed in-process by the integrated VCD engine
     #[arg(long)]
     target_scope: Option<String>,
 
-    /// Optional vcdtogglerate exclusion file
+    /// Optional exclusion file for the in-process VCD analysis (one full signal name per line)
     #[arg(long)]
     exclude_signal_file: Option<PathBuf>,
 
@@ -131,10 +127,6 @@ pub struct Args {
     /// Simulator timeout in milliseconds (default: 600000)
     #[arg(long)]
     simulator_timeout_ms: Option<u64>,
-
-    /// Analyzer timeout in milliseconds (default: 120000)
-    #[arg(long)]
-    analyzer_timeout_ms: Option<u64>,
 
     /// OpenOCD Tcl RPC address (default: 127.0.0.1:6666)
     #[arg(long)]
@@ -201,12 +193,10 @@ pub enum BackendConfig {
         simulator_path: PathBuf,
         simulator_working_dir: PathBuf,
         simulator_args: Vec<String>,
-        analyzer_path: PathBuf,
         target_scope: String,
         exclude_signal_file: Option<PathBuf>,
         vcd_dir: Option<PathBuf>,
         simulator_timeout_ms: u64,
-        analyzer_timeout_ms: u64,
     },
 }
 
@@ -285,18 +275,11 @@ impl Args {
                     .simulator_timeout_ms
                     .or(file.simulator_timeout_ms)
                     .unwrap_or(600_000);
-                let analyzer_timeout_ms = self
-                    .analyzer_timeout_ms
-                    .or(file.analyzer_timeout_ms)
-                    .unwrap_or(120_000);
-                if simulator_timeout_ms == 0 || analyzer_timeout_ms == 0 {
-                    return Err("Simulator and analyzer timeouts must be nonzero".into());
+                if simulator_timeout_ms == 0 {
+                    return Err("Simulator timeout must be nonzero".into());
                 }
-                if simulator_timeout_ms
-                    .checked_add(analyzer_timeout_ms)
-                    .is_none_or(|sum| exec_timeout_ms <= sum)
-                {
-                    return Err("--exec-timeout-ms must exceed the sum of simulator and analyzer timeouts, plus build time".into());
+                if exec_timeout_ms <= simulator_timeout_ms {
+                    return Err("--exec-timeout-ms must exceed the simulator timeout, plus build time".into());
                 }
                 let simulator_args = self
                     .simulator_arg
@@ -319,10 +302,6 @@ impl Args {
                         .or(file.simulator_working_dir)
                         .unwrap_or_else(|| ".".into()),
                     simulator_args,
-                    analyzer_path: require(
-                        "analyzer-path",
-                        self.analyzer_path.or(file.analyzer_path),
-                    )?,
                     target_scope: require_text(
                         "target-scope",
                         self.target_scope.or(file.target_scope),
@@ -330,7 +309,6 @@ impl Args {
                     exclude_signal_file: self.exclude_signal_file.or(file.exclude_signal_file),
                     vcd_dir: self.vcd_dir.or(file.vcd_dir),
                     simulator_timeout_ms,
-                    analyzer_timeout_ms,
                 }
             }
         };
@@ -509,7 +487,6 @@ mod tests {
             backend: Some(BackendKind::Simulation),
             simulator_path: Some("simulator".into()),
             simulator_arg: Some(vec!["{elf}".into(), "--trace={vcd}".into()]),
-            analyzer_path: Some("analyzer".into()),
             target_scope: Some("TOP.dut".into()),
             ..common()
         }
@@ -551,7 +528,6 @@ mod tests {
             backend = "simulation"
             simulator_path = "sim"
             simulator_arg = ["{elf}", "{vcd}"]
-            analyzer_path = "analyzer"
             target_scope = "TOP.dut"
         "#,
         )
@@ -641,11 +617,14 @@ mod tests {
         args.simulator_arg = Some(vec!["{elf}".into()]);
         assert!(args.merge(Args::default()).unwrap_err().contains("{vcd}"));
         let mut args = simulation();
-        args.analyzer_timeout_ms = Some(0);
+        args.simulator_timeout_ms = Some(0);
         assert!(args.merge(Args::default()).unwrap_err().contains("nonzero"));
         let mut args = simulation();
         args.exec_timeout_ms = Some(90_000);
-        assert!(args.merge(Args::default()).unwrap_err().contains("sum"));
+        assert!(args
+            .merge(Args::default())
+            .unwrap_err()
+            .contains("simulator timeout"));
         let mut args = simulation();
         args.target_scope = Some(" ".into());
         assert!(

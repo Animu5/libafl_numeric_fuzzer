@@ -14,6 +14,55 @@ fn script(path: &Path, contents: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+/// Minimal VCD with one 1-bit signal toggling at #10 (1ns timescale).
+const TRACE_VCD: &str = "\
+$timescale 1ns $end
+$scope module TOP $end
+$scope module dut $end
+$var wire 1 ! value $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+#10
+1!
+";
+
+/// Spawns the supervisor the way `SimulationBackend::run` does:
+/// `--internal-simulation-supervisor <elf> <simulator> <working_dir> <vcd> <secs> <nanos> <args...>`
+/// with `{elf}`/`{vcd}` already expanded in the simulator arguments.
+fn spawn_supervisor(
+    dir: &Path,
+    elf: &Path,
+    simulator: &Path,
+    vcd: &Path,
+    args: &[&str],
+) -> std::process::Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"));
+    command
+        .arg("--internal-simulation-supervisor")
+        .arg(elf)
+        .arg(simulator)
+        .arg(dir)
+        .arg(vcd)
+        .arg("30")
+        .arg("0");
+    for arg in args {
+        command.arg(
+            arg.replace("{elf}", &elf.to_string_lossy())
+                .replace("{vcd}", &vcd.to_string_lossy()),
+        );
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .unwrap()
+}
+
 fn wait_for(mut condition: impl FnMut() -> bool) {
     let start = Instant::now();
     while !condition() {
@@ -31,52 +80,26 @@ fn parent_process_helper() {
         return;
     };
     let dir = PathBuf::from(dir);
-    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
-        .arg("--internal-simulation-supervisor")
-        .arg(dir.join("program.elf"))
-        .arg(dir.join("simulator"))
-        .arg(&dir)
-        .arg(dir.join("analyzer"))
-        .arg("TOP.dut")
-        .arg("")
-        .arg("")
-        .args(["30", "0", "30", "0", "{elf}", "{vcd}"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .unwrap();
+    let elf = dir.join("program.elf");
+    let vcd = dir.join("trace.vcd");
+    let mut supervisor = spawn_supervisor(&dir, &elf, &dir.join("simulator"), &vcd, &["{elf}", "{vcd}"]);
+    drop(supervisor.stdout.take());
+    drop(supervisor.stderr.take());
     let _liveness = supervisor.stdin.take().unwrap();
     fs::write(dir.join("supervisor-pid"), supervisor.id().to_string()).unwrap();
     supervisor.wait().unwrap();
 }
 
 #[test]
-fn supervisor_returns_metrics_on_success() {
+fn supervisor_runs_simulator_and_leaves_the_trace_for_in_process_analysis() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path();
-    fs::write(path.join("program.elf"), b"ELF").unwrap();
-    script(&path.join("simulator"), "echo wave > \"$2\"");
-    script(
-        &path.join("analyzer"),
-        "printf 'toggle_activity=12\\ntoggle_coverage=0.5\\n'",
-    );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
-        .arg("--internal-simulation-supervisor")
-        .arg(path.join("program.elf"))
-        .arg(path.join("simulator"))
-        .arg(path)
-        .arg(path.join("analyzer"))
-        .arg("TOP.dut")
-        .arg("")
-        .arg("")
-        .args(["2", "0", "2", "0", "{elf}", "{vcd}"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let elf = path.join("program.elf");
+    let vcd = path.join("trace.vcd");
+    fs::write(&elf, b"ELF").unwrap();
+    fs::write(path.join("trace.vcd.src"), TRACE_VCD).unwrap();
+    script(&path.join("simulator"), "cp trace.vcd.src \"$2\"");
+    let mut child = spawn_supervisor(path, &elf, &path.join("simulator"), &vcd, &["{elf}", "{vcd}"]);
     let _liveness = child.stdin.take().unwrap();
     let result = child.wait_with_output().unwrap();
     assert!(
@@ -84,34 +107,43 @@ fn supervisor_returns_metrics_on_success() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(
-        String::from_utf8(result.stdout).unwrap(),
-        "toggle_activity=12\ntoggle_coverage=0.5\n"
-    );
+    // The supervisor only runs the simulator; the parent analyzes the VCD in-process.
+    assert!(vcd.is_file());
+    assert_eq!(fs::read_to_string(&vcd).unwrap(), TRACE_VCD);
 }
 
 #[test]
-fn supervisor_analyzes_real_chipyard_cycle_limit_when_configured() {
+fn supervisor_reports_missing_trace_as_measurement_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let elf = path.join("program.elf");
+    let vcd = path.join("trace.vcd");
+    fs::write(&elf, b"ELF").unwrap();
+    script(&path.join("simulator"), "exit 0");
+    let mut child = spawn_supervisor(path, &elf, &path.join("simulator"), &vcd, &["{elf}", "{vcd}"]);
+    let _liveness = child.stdin.take().unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert_eq!(result.status.code(), Some(11));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("did not produce VCD"));
+}
+
+#[test]
+fn supervisor_runs_real_chipyard_cycle_limit_when_configured() {
     let Some(simulator) = std::env::var_os("CHIPYARD_TEST_SIMULATOR") else {
         return;
     };
     let elf = std::env::var_os("CHIPYARD_TEST_ELF").expect("CHIPYARD_TEST_ELF must be set");
-    let analyzer = std::env::var_os("VCDTOGGLERATE_TEST_BINARY")
-        .expect("VCDTOGGLERATE_TEST_BINARY must be set");
     let ini =
         std::env::var("CHIPYARD_TEST_DRAMSIM_INI").expect("CHIPYARD_TEST_DRAMSIM_INI must be set");
     let dir = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
-        .arg("--internal-simulation-supervisor")
-        .arg(elf)
-        .arg(simulator)
-        .arg(dir.path())
-        .arg(analyzer)
-        .arg("TOP")
-        .arg("")
-        .arg("")
-        .args(["60", "0", "60", "0"])
-        .args([
+    let elf_path = PathBuf::from(&elf);
+    let vcd = dir.path().join("trace.vcd");
+    let mut child = spawn_supervisor(
+        dir.path(),
+        &elf_path,
+        &PathBuf::from(&simulator),
+        &vcd,
+        &[
             "+permissive",
             "+dramsim",
             &format!("+dramsim_ini_dir={ini}"),
@@ -120,12 +152,8 @@ fn supervisor_analyzes_real_chipyard_cycle_limit_when_configured() {
             "+vcdfile={vcd}",
             "+permissive-off",
             "{elf}",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        ],
+    );
     let _liveness = child.stdin.take().unwrap();
     let result = child.wait_with_output().unwrap();
     assert!(
@@ -133,49 +161,37 @@ fn supervisor_analyzes_real_chipyard_cycle_limit_when_configured() {
         "supervisor failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let stdout = String::from_utf8(result.stdout).unwrap();
-    assert!(stdout.contains("toggle_activity="), "{stdout}");
-    assert!(stdout.contains("toggle_coverage="), "{stdout}");
+    // The cycle-limit VCD is left in place for the parent's in-process analysis.
+    assert!(vcd.is_file() && vcd.metadata().unwrap().len() > 0);
     assert!(!dir.path().join("core").exists());
 }
 
 #[test]
 fn supervisor_cleans_up_after_parent_is_killed() {
-    for analyzer_phase in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        fs::write(path.join("program.elf"), b"ELF").unwrap();
-        let simulator = if analyzer_phase {
-            "printf '%s' \"$2\" > vcd-path; echo wave > \"$2\""
-        } else {
-            "printf '%s' \"$2\" > vcd-path; echo wave > \"$2\"; (sleep 1; echo leaked > marker) & wait"
-        };
-        let analyzer = "echo started > analyzer-started; (sleep 1; echo leaked > marker) & wait";
-        script(&path.join("simulator"), simulator);
-        script(&path.join("analyzer"), analyzer);
-        let mut parent = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "parent_process_helper"])
-            .env("SIMULATION_PARENT_HELPER", path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        wait_for(|| {
-            fs::read_to_string(path.join("vcd-path")).is_ok_and(|content| !content.is_empty())
-        });
-        if analyzer_phase {
-            wait_for(|| path.join("analyzer-started").exists());
-        }
-        let vcd = PathBuf::from(fs::read_to_string(path.join("vcd-path")).unwrap());
-        wait_for(|| vcd.exists());
-        parent.kill().unwrap();
-        parent.wait().unwrap();
-        wait_for(|| !vcd.exists());
-        assert!(!vcd.parent().unwrap().exists());
-        thread::sleep(Duration::from_millis(1200));
-        assert!(
-            !path.join("marker").exists(),
-            "simulation child survived parent death"
-        );
-    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let elf = path.join("program.elf");
+    let vcd = path.join("trace.vcd");
+    fs::write(&elf, b"ELF").unwrap();
+    fs::write(path.join("trace.vcd.src"), TRACE_VCD).unwrap();
+    // The simulator writes the trace, then leaks a background child and waits for it.
+    script(
+        &path.join("simulator"),
+        "cp trace.vcd.src \"$2\"; (sleep 1; echo leaked > marker) & wait",
+    );
+    let mut parent = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "parent_process_helper"])
+        .env("SIMULATION_PARENT_HELPER", path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for(|| vcd.is_file());
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    thread::sleep(Duration::from_millis(1200));
+    assert!(
+        !path.join("marker").exists(),
+        "simulation child survived parent death"
+    );
 }
