@@ -52,6 +52,17 @@ Notable changes are summarized here. Earlier history is available in Git.
   exception. Deliberate divergence from the Go gate, which emitted the
   absolute target PC as a decimal operand.
 
+### Fixed
+
+- Memory operands in the grammar now carry an explicit offset:
+  `grammars/RISCV64G.g4` emits `0(xN)` instead of `(xN)` for loads/stores
+  (per the RISC-V specification a missing offset means 0), and
+  `grammars/riscv64g.json` was regenerated accordingly. Previously the
+  offset hook mapped to an empty string, the ISA gate rejected every
+  `lw x2,(x22)`-style line ("bad offset"), and memory instructions never
+  reached the target. The gate also accepts a missing offset as 0 now, so
+  spec-valid assembly is no longer rejected.
+
 ## 0.10.1
 
 ### Fixed

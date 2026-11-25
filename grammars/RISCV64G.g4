@@ -197,10 +197,13 @@ init_f30_const: 'f30const: .quad ' run_random_float;
 init_f31_const: 'f31const: .quad ' run_random_float;
 
 int_mem_stmt:
-    INT_MEM_INSTR WHITESPACE int_Reg ',' '(' int_Reg ')' NEWLINE;
+    // RISC-V allows a missing memory offset (it then means 0); emit it
+    // explicitly so the statement text is complete without the emulator hook.
+    INT_MEM_INSTR WHITESPACE int_Reg ',' '0' '(' int_Reg ')' NEWLINE;
 
 float_mem_stmt:
-    FLOAT_MEM_INSTR WHITESPACE FLOAT_REG ',' '(' int_Reg ')' NEWLINE;
+    // Same as above: missing offset means 0.
+    FLOAT_MEM_INSTR WHITESPACE FLOAT_REG ',' '0' '(' int_Reg ')' NEWLINE;
 
 int2_stmt:
     INT2_INSTR WHITESPACE int_Reg ',' int_Reg NEWLINE;

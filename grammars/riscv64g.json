@@ -341,11 +341,11 @@
  ],
  [
   "Int_mem_stmt",
-  "{INT_MEM_INSTR}{WHITESPACE}{Int_Reg},({Int_Reg}){NEWLINE}"
+  "{INT_MEM_INSTR}{WHITESPACE}{Int_Reg},0({Int_Reg}){NEWLINE}"
  ],
  [
   "Float_mem_stmt",
-  "{FLOAT_MEM_INSTR}{WHITESPACE}{FLOAT_REG},({Int_Reg}){NEWLINE}"
+  "{FLOAT_MEM_INSTR}{WHITESPACE}{FLOAT_REG},0({Int_Reg}){NEWLINE}"
  ],
  [
   "Int2_stmt",

@@ -83,7 +83,8 @@ fn parse_reg(s: &str) -> Result<usize, GateError> {
     }
 }
 
-/// Parses "4(x2)" into offset 4 and base register 2.
+/// Parses "4(x2)" into offset 4 and base register 2. Per the RISC-V
+/// specification a missing offset ("(x2)") is allowed and means 0.
 fn parse_mem_operand(s: &str) -> Result<(i64, usize), GateError> {
     let open = s
         .find('(')
@@ -91,9 +92,14 @@ fn parse_mem_operand(s: &str) -> Result<(i64, usize), GateError> {
     if !s.ends_with(')') {
         return Err(GateError(format!("bad memory operand {s:?}")));
     }
-    let off = s[..open]
-        .parse::<i64>()
-        .map_err(|e| GateError(format!("bad offset in {s:?}: {e}")))?;
+    let off_text = &s[..open];
+    let off = if off_text.is_empty() {
+        0
+    } else {
+        off_text
+            .parse::<i64>()
+            .map_err(|e| GateError(format!("bad offset in {s:?}: {e}")))?
+    };
     let base = parse_reg(&s[open + 1..s.len() - 1])?;
     Ok((off, base))
 }
@@ -472,6 +478,17 @@ mod tests {
         // x1 = 0x80002000 (LOWER_VALID_MEM); -100 would underflow, so the offset is fixed to 0.
         let out = gate("li x1,2147491840\nlw x2,-100(x1)\n").unwrap();
         assert!(out.contains("lw x2,0(x1)\n"), "offset not clamped: {out:?}");
+    }
+
+    #[test]
+    fn missing_memory_offset_means_zero() {
+        // RISC-V allows "lw x2,(x1)"; the missing offset is 0. x1 starts at 0,
+        // which cannot hold a valid address, so the li fix-up kicks in too.
+        let out = gate("lw x2,(x1)\n").unwrap();
+        assert_eq!(
+            out,
+            format!(".Lbr0:\nli x1,{MIDDLE_VALID_MEM}\nlw x2,0(x1)\n")
+        );
     }
 
     #[test]
