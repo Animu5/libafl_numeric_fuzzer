@@ -7,3 +7,6 @@ fuzzer.log
 
 # No need to add local configuration.
 fuzzer_rai07.toml
+# Local IDE settings and the local simulator binary (kept on disk, untracked).
+/.idea/
+/simulator-chipyard.harness-LargeBoomConfig-debug
