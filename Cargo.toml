@@ -8,7 +8,7 @@ default = ["hardware"]
 hardware = ["dep:visa-rs"]
 
 [dependencies]
-libafl = { version = "0.16.1", features = ["tui_monitor", "afl_exec_sec", "track_hit_feedbacks", "introspection"] }
+libafl = { version = "0.16.1", features = ["tui_monitor", "afl_exec_sec", "track_hit_feedbacks", "introspection", "nautilus"] }
 libafl_bolts = { version = "0.16.1", features = ["cli"] }
 clap = { version = "4.6", features = ["derive"]}
 tracing = "0.1.44"

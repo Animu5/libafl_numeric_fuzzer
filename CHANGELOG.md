@@ -12,6 +12,9 @@ Notable changes are summarized here. Earlier history is available in Git.
   the processes sharing the central log file can be told apart without the pid.
   The tag is a per-process global set at startup (`set_log_tag`) and rendered by
   a custom `FormatEvent` implementation (`TaggedFormat`) in `main.rs`.
+- Grammar-based fuzzing (work in progress on the `grammar` branch): the libafl
+  `nautilus` feature is enabled so `NautilusInput`/`NautilusGenerator`/
+  `NautilusRandomMutator`/`NautilusRecursionMutator` are available.
 
 ## 0.10.1
 
