@@ -76,10 +76,19 @@ use std::{
     fmt, io,
     path::Path,
     rc::Rc,
-    sync::Mutex,
+    sync::{Mutex, RwLock},
     time::{Duration, Instant},
 };
-use tracing_subscriber::EnvFilter;
+use tracing::Subscriber;
+use tracing_subscriber::{
+    EnvFilter,
+    fmt::{
+        FmtContext, FormatEvent,
+        format::{FormatFields, Writer},
+        time::{FormatTime, SystemTime},
+    },
+    registry::LookupSpan,
+};
 
 /// The concrete LibAFL state used by every worker.
 type WorkerState =
@@ -90,7 +99,57 @@ fn context<E: fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
     move |e| Error::illegal_state(format!("{what}: {e}"))
 }
 
-/// Logs to `path`, truncating any existing file. The writer is unbuffered so nothing is lost
+/// Process-role tag attached to every log line (see [`TaggedFormat`]). Set once per
+/// process at startup: `broker` or `single` in [`main`], `worker-NNNN` in the
+/// `Launcher`'s client closure, `supervisor` in the simulation supervisor.
+static LOG_TAG: RwLock<String> = RwLock::new(String::new());
+
+/// Sets the process-role tag that [`TaggedFormat`] puts into every log line.
+pub(crate) fn set_log_tag(tag: impl Into<String>) {
+    if let Ok(mut guard) = LOG_TAG.write() {
+        *guard = tag.into();
+    }
+}
+
+/// Returns the current process-role tag, or an empty string if none was set.
+fn log_tag() -> String {
+    LOG_TAG.read().map(|guard| guard.clone()).unwrap_or_default()
+}
+
+/// Event formatter that inserts the process-role tag between the level and the
+/// target, e.g. `2026-11-25T12:34:56.789012Z  INFO [worker-0003] libafl_fuzzer: message`.
+/// In parallel mode broker and workers share one log file (the workers inherit the
+/// file descriptor across the fork), so the tag — not the pid — is what tells the
+/// processes apart.
+pub(crate) struct TaggedFormat;
+
+impl<S, N> FormatEvent<S, N> for TaggedFormat
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+    N: for<'writer> FormatFields<'writer> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> fmt::Result {
+        SystemTime.format_time(&mut writer)?;
+        write!(
+            writer,
+            " {:<5} [{}] {}: ",
+            event.metadata().level(),
+            log_tag(),
+            event.metadata().target(),
+        )?;
+        // The formatted fields: the `message` plus any structured fields.
+        ctx.format_fields(writer.by_ref(), event)?;
+        writeln!(writer)
+    }
+}
+
+/// Logs to `path`, truncating any existing file. Every line is tagged with the
+/// process role (see [`TaggedFormat`]). The writer is unbuffered so nothing is lost
 /// if a crash handler kills the process. The filter comes from `level` if given, else from
 /// `RUST_LOG`, else `info`. LibAFL logs through the `log` crate; the `tracing-log` feature
 /// bridges those records into tracing so they land in the same file.
@@ -109,6 +168,7 @@ fn init_logging(path: &Path, level: Option<&str>) -> io::Result<()> {
         .with_writer(Mutex::new(file))
         .with_ansi(false)
         .with_env_filter(filter)
+        .event_format(TaggedFormat)
         .init();
     Ok(())
 }
@@ -276,6 +336,13 @@ fn main() -> Result<(), Error> {
     // the same log file (central logging via fork-inherited file descriptor).
     init_logging(&config.log_file, config.log_level.as_deref())
         .map_err(context("Could not initialize logging"))?;
+    // Tag this process in the shared log file: the parallel broker, or the single
+    // worker when not running under the Launcher.
+    set_log_tag(if config.worker_dirs.is_some() {
+        "broker"
+    } else {
+        "single"
+    });
 
     if config.worker_dirs.is_some() {
         return launch_parallel(config);
@@ -358,6 +425,9 @@ fn launch_parallel(config: Config) -> Result<(), Error> {
                 config
                     .select_worker(worker_index)
                     .map_err(Error::illegal_state)?;
+                // Workers are forked from the broker and inherit the log file
+                // descriptor; tag their lines with the 0-based worker index.
+                set_log_tag(format!("worker-{worker_index:04}"));
                 run_worker(config, &mut mgr)
             },
         )
@@ -541,5 +611,55 @@ mod tests {
                     .is_ok()
             );
         }
+    }
+
+    /// Every log line carries the process-role tag set via [`set_log_tag`], so broker,
+    /// workers, and the supervisor can be told apart in the shared log file.
+    #[test]
+    fn log_lines_carry_the_process_role_tag() {
+        use std::sync::Arc;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        /// `MakeWriter` that appends every written line to a shared in-memory buffer.
+        #[derive(Clone, Default)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for SharedBuf {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self {
+                self.clone()
+            }
+        }
+
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .event_format(TaggedFormat)
+            .finish();
+        set_log_tag("worker-0003");
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(answer = 42, "hello from the worker");
+        });
+        set_log_tag("");
+
+        let output = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("[worker-0003]"),
+            "log line is missing the role tag: {output:?}"
+        );
+        assert!(
+            output.contains("hello from the worker") && output.contains("answer=42"),
+            "log line is missing the message or structured fields: {output:?}"
+        );
     }
 }

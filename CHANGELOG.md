@@ -2,6 +2,17 @@
 
 Notable changes are summarized here. Earlier history is available in Git.
 
+## Unreleased
+
+### Added
+
+- Process-role tags in the log: every line now carries `[broker]`, `[single]`,
+  `[worker-NNNN]` (0-based worker index), or `[supervisor]` after the level
+  (e.g. `2026-11-25T12:34:56.789012Z  INFO [worker-0003] libafl_fuzzer: …`), so
+  the processes sharing the central log file can be told apart without the pid.
+  The tag is a per-process global set at startup (`set_log_tag`) and rendered by
+  a custom `FormatEvent` implementation (`TaggedFormat`) in `main.rs`.
+
 ## 0.10.1
 
 ### Fixed

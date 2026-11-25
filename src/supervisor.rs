@@ -246,11 +246,15 @@ pub(crate) fn classify_simulator_output(
 /// (the parent already expanded `{elf}`/`{vcd}`). Exit codes: 0 success, 10 candidate
 /// failure, 11 measurement failure, 12 fatal.
 pub fn supervisor_main() -> i32 {
+    // Tag this child process's own stderr lines; the parent may also relay them into
+    // the shared log file, where the tag still identifies their origin.
+    crate::set_log_tag("supervisor");
     // The parent captures this process's stderr, so log there (default debug) to make
     // failures carry the full simulator command line.
     let _ = tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .with_ansi(false)
+        .event_format(crate::TaggedFormat)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),

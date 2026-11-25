@@ -95,6 +95,8 @@ Interesting inputs are saved to the solutions directory. On hardware an input is
 
 Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on every start. Set the filter with `--log-level` (TOML `log_level`), e.g. `--log-level debug` or `--log-level info,libafl=debug`; if unset, `RUST_LOG` is honored, otherwise the level is `info`. LibAFL logs through the `log` crate, and those records are bridged into the same file, so `libafl`/`libafl_bolts` targets can be filtered the same way. With `--log-level debug` the log shows every snippet build, every simulation invocation and in-process VCD analysis (with expanded arguments and exit statuses), and each skipped input with its size and a hex preview.
 
+Every log line carries the process role in brackets after the level, e.g. `2026-11-25T12:34:56.789012Z  INFO [worker-0003] libafl_fuzzer: …`: `[broker]` in parallel mode, `[worker-NNNN]` (0-based worker index) for each forked worker, `[single]` in single-worker mode, and `[supervisor]` for the simulator child process. Since the broker and all workers write to one shared file, the tag is what tells the processes apart — `grep '\[worker-0003\]' fuzzer.log` shows one worker's lines.
+
 ## Progress display
 
 `--monitor` (TOML `monitor`) selects how fuzzing progress is shown: `tui` (default; full-screen terminal UI with per-client stats in parallel mode), `print` (plain progress lines on stdout), `log` (a stats line in the log file every 60 s — use this for headless runs), or `none`. In parallel mode the broker aggregates stats from all workers, so `tui` shows a per-client dashboard and `log` writes aggregated lines to the central `--log-file`.
@@ -248,9 +250,10 @@ assembly. Global improvements are also printed on stderr. The exchange directory
 must not already exist: use a fresh solutions path for each run, especially if
 simulation settings change. Snippet archives use the same per-worker
 subdirectories. Logging is initialized before forking, so the broker and all
-workers share one central log file (`--log-file`); use `--monitor log` for
-headless runs to get aggregated stats lines in that file, or `--monitor tui` for
-the per-client dashboard.
+workers share one central log file (`--log-file`); every line is tagged with
+its process role (`[broker]`, `[worker-NNNN]`, see *Logging*). Use
+`--monitor log` for headless runs to get aggregated stats lines in that file,
+or `--monitor tui` for the per-client dashboard.
 
 ## SLURM
 
