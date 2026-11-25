@@ -1,3 +1,7 @@
+//! The per-input harness: decodes the bitstream into assembly, builds the ELF with
+//! the snippet builder, runs the selected evaluation backend, and stores the
+//! outcome in [`Shared`] for the feedback to pick up.
+
 use crate::{
     evaluation::{EvaluationBackend, EvaluationError, Metric},
     feedback::Shared,
@@ -18,6 +22,9 @@ pub struct Harness {
 }
 
 impl Harness {
+    /// Builds and evaluates one input, storing the outcome in `shared` (evaluation,
+    /// assembly, input bytes) for the feedback; failures are recorded there or
+    /// logged, so the exit kind is always `Ok`.
     pub fn run(&mut self, input: &BytesInput) -> ExitKind {
         *self.shared.evaluation.borrow_mut() = None;
         *self.shared.assembly.borrow_mut() = None;

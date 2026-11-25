@@ -1,3 +1,11 @@
+//! The evaluation backend contract and the result of one evaluation.
+//!
+//! A backend implements [`EvaluationBackend::evaluate`]: given a freshly built ELF
+//! it returns a validated [`Evaluation`] — a score plus, for the simulation
+//! backend, the trace map — or a classified [`EvaluationError`] so the caller can
+//! apply backend-appropriate recovery (skip the candidate, retry a measurement,
+//! or abort the campaign).
+
 use std::{error::Error, fmt, path::Path, rc::Rc};
 
 /// Evaluates a freshly built candidate. Larger scores are more interesting.
@@ -35,6 +43,7 @@ pub fn format_percentage(fraction: f64) -> String {
 }
 
 impl Evaluation {
+    /// A power-delta evaluation in watts (hardware backend); must be finite.
     #[cfg_attr(not(feature = "hardware"), allow(dead_code))]
     pub fn power_delta(watts: f64) -> Result<Self, EvaluationError> {
         if !watts.is_finite() {
@@ -51,6 +60,9 @@ impl Evaluation {
         })
     }
 
+    /// A simulation evaluation from the in-process VCD analysis: `activity` (changes
+    /// per simulated second) is the score, `coverage` the bit-level toggle coverage,
+    /// and `map` the trace map (primary feedback).
     pub fn toggle_metrics(
         activity: f64,
         coverage: f64,
@@ -80,10 +92,12 @@ impl Evaluation {
         })
     }
 
+    /// Which metric the score is.
     pub fn metric(&self) -> Metric {
         self.metric
     }
 
+    /// The primary score; larger is better.
     pub fn score(&self) -> f64 {
         self.score
     }

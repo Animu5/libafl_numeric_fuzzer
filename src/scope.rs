@@ -1,3 +1,7 @@
+//! NI-VISA connection to the oscilloscope: resource listing (`--list-scopes`),
+//! opening an instrument by resource string, and command/response I/O with an
+//! explicit timeout per query.
+
 use std::error::Error;
 use std::ffi::CString;
 use std::fmt;

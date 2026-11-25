@@ -19,14 +19,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Captured result of one supervised child process.
 pub(crate) struct ProcessOutput {
+    /// How the process exited (or by which signal, if killed).
     pub(crate) status: ExitStatus,
+    /// Whether the process was killed because it exceeded its timeout.
     pub(crate) timed_out: bool,
+    /// First [`OUTPUT_LIMIT`] bytes of stdout.
     pub(crate) stdout: Vec<u8>,
+    /// Last [`OUTPUT_LIMIT`] bytes of stderr (the tail usually holds the error).
     pub(crate) stderr: Vec<u8>,
 }
 
 impl ProcessOutput {
+    /// Both captured streams as a lossy string, for error messages.
     pub(crate) fn diagnostic(&self) -> String {
         format!(
             "stderr: {:?}; stdout: {:?}",
@@ -35,6 +41,9 @@ impl ProcessOutput {
         )
     }
 
+    /// Whether the exit looks like Chipyard's explicit cycle-limit abort
+    /// (`*** FAILED *** (timeout) after N simulation cycles` with exit 255 or
+    /// SIGABRT) — such runs still yield a usable (partial) VCD.
     pub(crate) fn chipyard_cycle_limit(&self) -> bool {
         use std::os::unix::process::ExitStatusExt;
         if self.status.code() != Some(255) && self.status.signal() != Some(libc::SIGABRT) {
@@ -55,7 +64,10 @@ impl ProcessOutput {
     }
 }
 
-fn read_bounded(mut reader: impl Read) -> io::Result<Vec<u8>> {
+/// Reads `reader` to EOF, keeping at most [`OUTPUT_LIMIT`] bytes: the first bytes
+/// when `keep_tail` is false (stdout, kept for context), the last bytes when true
+/// (stderr, where the final line usually carries the error).
+fn read_bounded(mut reader: impl Read, keep_tail: bool) -> io::Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut buffer = [0; 8192];
     loop {
@@ -63,28 +75,24 @@ fn read_bounded(mut reader: impl Read) -> io::Result<Vec<u8>> {
         if count == 0 {
             break;
         }
-        let keep = count.min(OUTPUT_LIMIT.saturating_sub(output.len()));
-        output.extend_from_slice(&buffer[..keep]);
+        if keep_tail {
+            let excess = (output.len() + count).saturating_sub(OUTPUT_LIMIT);
+            if excess != 0 {
+                output.drain(..excess);
+            }
+            output.extend_from_slice(&buffer[..count]);
+        } else {
+            let keep = count.min(OUTPUT_LIMIT.saturating_sub(output.len()));
+            output.extend_from_slice(&buffer[..keep]);
+        }
     }
     Ok(output)
 }
 
-fn read_bounded_tail(mut reader: impl Read) -> io::Result<Vec<u8>> {
-    let mut output = Vec::new();
-    let mut buffer = [0; 8192];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            return Ok(output);
-        }
-        let excess = (output.len() + count).saturating_sub(OUTPUT_LIMIT);
-        if excess != 0 {
-            output.drain(..excess);
-        }
-        output.extend_from_slice(&buffer[..count]);
-    }
-}
-
+/// Runs `command` in its own process group with piped stdio, polling `cancelled`
+/// (set when the parent dies) and enforcing `timeout`. On either, the whole
+/// process group is SIGKILLed. Even after a successful exit the group is killed
+/// again to reap stragglers that outlived the leader.
 pub(crate) fn run_process(
     command: &mut Command,
     timeout: Duration,
@@ -103,8 +111,8 @@ pub(crate) fn run_process(
     let group = child.id() as libc::pid_t;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let out_thread = thread::spawn(move || read_bounded(stdout));
-    let err_thread = thread::spawn(move || read_bounded_tail(stderr));
+    let out_thread = thread::spawn(move || read_bounded(stdout, false));
+    let err_thread = thread::spawn(move || read_bounded(stderr, true));
     let start = Instant::now();
     let mut timed_out = false;
     let status = loop {

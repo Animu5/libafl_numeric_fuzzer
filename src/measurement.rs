@@ -1,3 +1,7 @@
+//! Oscilloscope measurement: one-time display setup, capture the idle level into
+//! scope memory M1 while the target is halted, capture the running level, then read
+//! the mean of F1 (running minus idle) — the power delta that scores an input.
+
 use crate::scope::{Scope, ScopeError};
 use std::time::Duration;
 use std::{error::Error, fmt};

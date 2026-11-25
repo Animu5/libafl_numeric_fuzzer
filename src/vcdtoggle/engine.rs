@@ -1,3 +1,9 @@
+//! Single-pass waveform engine (vendored from `vcdtogglemeasure`): wellen parses
+//! the header and hierarchy, the [`super::fastvcd`] scanner walks VCD bodies, and
+//! anything the fast scanner does not support falls back to wellen's streaming
+//! parser, so results never depend on the fast path guessing. Produces the raw
+//! per-signal toggle counts that [`super::metrics`] turns into metrics.
+
 use super::excludes::Excluded;
 use super::fastvcd;
 use super::selection::{keep_signal, lookup_target, unique_signal_refs};
@@ -10,6 +16,8 @@ use wellen::{
     Timescale,
 };
 
+/// Input for one [`run`]: the waveform file, the dotted target scope path, the
+/// exclusion set, and whether the file is VCD (enables the fast scanner).
 pub struct EngineConfig<'a> {
     pub input_file: &'a Path,
     pub target_scope: &'a str,

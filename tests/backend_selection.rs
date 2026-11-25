@@ -1,8 +1,10 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::executable;
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -20,15 +22,13 @@ fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
     )
     .unwrap();
     let simulator = root.join("simulator");
-    fs::write(
+    executable(
         &simulator,
-        format!(
-            "#!/bin/sh\ntest -f \"$1\" || exit 1\ncp \"{}/trace.vcd\" \"$2\"\n",
+        &format!(
+            "test -f \"$1\" || exit 1\ncp \"{}/trace.vcd\" \"$2\"",
             root.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&simulator, fs::Permissions::from_mode(0o700)).unwrap();
+    );
     fs::write(root.join("trace.vcd"), TRACE_VCD).unwrap();
     let solutions = root.join("solutions");
     let log = root.join("fuzzer.log");
@@ -106,15 +106,13 @@ fn simulation_fixture(root: &std::path::Path) -> std::path::PathBuf {
     )
     .unwrap();
     let simulator = root.join("simulator");
-    fs::write(
+    executable(
         &simulator,
-        format!(
-            "#!/bin/sh\ntest -f \"$1\" || exit 1\ncp \"{}/trace.vcd\" \"$2\"\n",
+        &format!(
+            "test -f \"$1\" || exit 1\ncp \"{}/trace.vcd\" \"$2\"",
             root.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&simulator, fs::Permissions::from_mode(0o700)).unwrap();
+    );
     fs::write(root.join("trace.vcd"), TRACE_VCD).unwrap();
     simulator
 }

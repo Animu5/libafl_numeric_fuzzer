@@ -1,11 +1,16 @@
+//! Optional signal exclusion file (vendored from `vcdtogglemeasure`): one full
+//! signal name (e.g. `TOP.dut.nibble`) per line; blank lines are ignored.
+
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::Path;
 use std::collections::HashSet;
 
+/// Full signal names excluded from the analysis.
 pub type Excluded = HashSet<String>;
 
+/// Loads the exclusion file, or returns an empty set when `None` is given.
 pub fn load(exclude_signal_file: Option<&Path>) -> io::Result<Excluded> {
     match exclude_signal_file {
         None => Ok(HashSet::new()),

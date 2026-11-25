@@ -1,3 +1,6 @@
+//! Minimal client for OpenOCD's Tcl RPC port: commands are sent as lines terminated
+//! by the 0x1a token, responses are read until the same token.
+
 use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpStream};

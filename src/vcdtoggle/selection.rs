@@ -1,6 +1,11 @@
+//! Target-scope lookup and the kept-signal filter (vendored from
+//! `vcdtogglemeasure`): clock/reset/debug/hidden names and names starting with
+//! `_` are always dropped, plus anything in the exclusion file.
+
 use super::excludes::Excluded;
 use wellen::{Hierarchy, ScopeRef, SignalRef, Var};
 
+/// Resolves the dotted scope path (e.g. `TOP.dut`) to a scope; error if absent.
 pub fn lookup_target(hierarchy: &Hierarchy, target_scope: &str) -> Result<ScopeRef, String> {
     let target_scope_path: Vec<&str> = target_scope.split('.').collect();
     hierarchy
@@ -28,6 +33,8 @@ pub fn unique_signal_refs(
     refs
 }
 
+/// Whether a variable is counted: clock/reset/debug/hidden-style names and `_`-prefixed
+/// names are always dropped, as are explicitly excluded full names.
 pub fn keep_signal(hierarchy: &Hierarchy, var: &Var, excluded: &Excluded) -> bool {
     let name = var.name(hierarchy);
 

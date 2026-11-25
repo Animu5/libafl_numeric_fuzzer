@@ -1,18 +1,15 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::executable;
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
-
-fn executable(path: &Path, script: &str) {
-    fs::write(path, format!("#!/bin/sh\n{script}\n")).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-}
 
 /// A small VCD with a single 1-bit signal toggling once at #10 (1ns timescale):
 /// activity 1e8 toggles/s, coverage 1.0.

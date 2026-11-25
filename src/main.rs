@@ -1,5 +1,15 @@
-// The simulation backend, parallel workers, and input exchange all use Unix-only
-// APIs (fork, flock, process groups). The hardware backend needs a Unix target too.
+//! LibAFL-based numeric fuzzer for RISC-V snippets: every input is decoded into
+//! assembly, built into an ELF, and evaluated by a backend — hardware (OpenOCD +
+//! oscilloscope power delta) or simulation (Verilator VCD analyzed in-process) —
+//! and the [`feedback`] decides which inputs are interesting.
+//!
+//! Parallel fuzzing on a single node uses LibAFL's `Launcher` with LLMP
+//! shared-memory IPC (see [`launch_parallel`]): the broker process owns the
+//! monitor, forked workers are pinned to cores, and all of them share one central
+//! log file.
+//!
+//! The simulation backend, parallel workers, and input exchange all use Unix-only
+//! APIs (fork, flock, process groups). The hardware backend needs a Unix target too.
 #[cfg(not(unix))]
 compile_error!("libafl_fuzzer only supports Unix platforms");
 

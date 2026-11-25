@@ -1,3 +1,7 @@
+//! Derived metrics (vendored from `vcdtogglemeasure`): toggle activity per
+//! simulated second, bit-level toggle coverage, and the trace map built from the
+//! per-signal toggle counts.
+
 use super::engine::ToggleMetrics;
 use wellen::Time;
 

@@ -1,3 +1,8 @@
+//! Snippet build: pipes the input bitstream into `atndecode` to decode RISC-V
+//! assembly, writes it as `src/snippet.S` in the assembly environment, and runs
+//! `make` there to produce `snippet.elf`. The decoded assembly is kept so it can be
+//! saved next to interesting inputs.
+
 use std::{
     fmt, io,
     io::Write,
@@ -20,6 +25,7 @@ fn absolute(path: &Path) -> PathBuf {
     }
 }
 
+/// Why a snippet build failed.
 #[derive(Debug)]
 pub enum BuildError {
     Decode(String),
@@ -89,6 +95,8 @@ pub struct SnippetBuilder {
 }
 
 impl SnippetBuilder {
+    /// Creates a builder for `assembly_environment` that decodes with
+    /// `atndecode_path` and builds with `make` using `riscv_toolpath` as `RISCV`.
     pub fn new(
         assembly_environment: PathBuf,
         atndecode_path: PathBuf,

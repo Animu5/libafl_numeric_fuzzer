@@ -1,18 +1,16 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::executable as script;
 use std::{
     fs,
-    os::unix::{fs::PermissionsExt, process::CommandExt},
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
-
-fn script(path: &Path, contents: &str) {
-    fs::write(path, format!("#!/bin/sh\n{contents}\n")).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-}
 
 /// Minimal VCD with one 1-bit signal toggling at #10 (1ns timescale).
 const TRACE_VCD: &str = "\

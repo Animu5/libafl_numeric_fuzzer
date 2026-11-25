@@ -1,3 +1,10 @@
+//! The LibAFL feedback that decides which inputs are interesting.
+//!
+//! Primary feedback is the trace map carried by [`Evaluation`]: a run is
+//! interesting when it raises any map entry above the history. The scalar score
+//! (toggle activity, or the power delta on hardware) is the secondary metric used
+//! for `best.S` and the shared global-best record. See [`NumericFeedback`].
+
 use crate::evaluation::{Evaluation, Metric};
 use libafl::{
     Error,

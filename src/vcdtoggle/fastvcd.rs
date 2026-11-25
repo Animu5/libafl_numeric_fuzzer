@@ -19,12 +19,14 @@ use std::fs::File;
 use std::path::Path;
 use wellen::{Hierarchy, SignalEncoding, SignalRef, Time};
 
+/// Toggle counts of one selected signal.
 pub struct SignalCounts {
     pub signal: SignalRef,
     pub toggles: u64,
     pub toggled_bits: u32,
 }
 
+/// Result of one fast scan: per-signal counts and the time of the last change.
 pub struct FastOutcome {
     pub counts: Vec<SignalCounts>,
     pub last_change_time: Option<Time>,
@@ -36,6 +38,9 @@ type FastResult<T> = Result<T, String>;
 const MAX_ID_LEN: usize = 8;
 const NO_PREV: u8 = 4;
 
+/// Scans the VCD body of `path` for the selected `signals` in one mmap-based pass.
+/// Returns an error for anything outside the strict supported subset; the caller
+/// then falls back to wellen's streaming parser.
 pub fn run(path: &Path, hierarchy: &Hierarchy, signals: &[SignalRef]) -> FastResult<FastOutcome> {
     let file = File::open(path)
         .map_err(|err| format!("cannot open input file '{}': {err}", path.display()))?;

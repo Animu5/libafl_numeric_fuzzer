@@ -1,3 +1,8 @@
+//! Hardware backend: loads each built ELF onto the target through OpenOCD and
+//! scores it by the running-minus-idle power delta measured on the oscilloscope.
+//! Loading/resuming failures reset the target (`reset halt`) and are skipped;
+//! too many consecutive failures abort the campaign.
+
 use crate::{
     evaluation::{Evaluation, EvaluationBackend, EvaluationError},
     measurement::Measurement,
@@ -8,9 +13,14 @@ use std::{io, path::Path, thread, time::Duration};
 const MAX_MEASUREMENT_FAILURES: u32 = 5;
 const MAX_TARGET_FAILURES: u32 = 10;
 
+/// The target-control operations the hardware backend needs (OpenOCD by default,
+/// faked in tests).
 pub(crate) trait Target {
+    /// Loads `elf` onto the halted target.
     fn load_program(&mut self, elf: &Path) -> io::Result<()>;
+    /// Resumes the target (the programs are infinite loops).
     fn resume(&mut self) -> io::Result<()>;
+    /// Resets and halts the target, e.g. to recover from a crashed program.
     fn reset_halt(&mut self) -> io::Result<()>;
 }
 
@@ -28,6 +38,8 @@ impl Target for OpenOcd {
     }
 }
 
+/// Evaluates candidates on the real target; generic over the target so tests can
+/// substitute a fake.
 pub struct HardwareBackend<T = OpenOcd> {
     target: T,
     measurement: Box<dyn Measurement>,
@@ -37,6 +49,8 @@ pub struct HardwareBackend<T = OpenOcd> {
 }
 
 impl<T> HardwareBackend<T> {
+    /// Creates the backend from a connected target and a configured measurement;
+    /// `settle` is the time the target runs before the running level is captured.
     pub fn new(target: T, measurement: Box<dyn Measurement>, settle: Duration) -> Self {
         Self {
             target,

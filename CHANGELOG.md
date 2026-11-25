@@ -27,6 +27,11 @@ Notable changes are summarized here. Earlier history is available in Git.
   toggled at least once, and all coverages (`toggle_coverage`, `map_coverage`)
   are reported as percentages with two digits after the decimal point
   (e.g. `60.00%`) in the record and in log lines.
+- Documentation and cleanup pass (no behavior change): every module now has a
+  `//!` header and all public items are documented (including the vendored
+  `src/vcdtoggle/` code); the supervisor's two bounded-output readers were
+  unified into one `read_bounded(reader, keep_tail)`; the integration tests
+  share an `executable` script helper via `tests/common/mod.rs`.
 
 - Source files consolidated: `logging.rs` and `monitor.rs` merged into
   `main.rs`, `global_best.rs` merged into `parallel.rs`, and `simulation.rs`

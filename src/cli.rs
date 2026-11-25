@@ -1,3 +1,10 @@
+//! Command-line arguments and TOML configuration.
+//!
+//! Every setting can be given on the command line or in the TOML file passed with
+//! `--config` (same names with underscores, e.g. `openocd_addr = "..."`);
+//! command-line values take precedence over file values. [`Args::resolve`] merges
+//! both, applies defaults, and validates the result into a [`Config`].
+
 use clap::{CommandFactory, Parser, ValueEnum};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -174,12 +181,16 @@ pub struct Config {
     pub global_best: Option<(PathBuf, usize)>,
 }
 
+/// Directories dedicated to one parallel worker.
 #[derive(Debug, Clone)]
 pub struct WorkerDirs {
+    /// The worker's private copy of the assembly environment (built into `snippet.elf`).
     pub assembly: PathBuf,
+    /// The worker's private simulator working directory (VCDs land here by default).
     pub simulator: PathBuf,
 }
 
+/// Fully resolved backend settings.
 #[derive(Debug)]
 pub enum BackendConfig {
     Hardware {
@@ -435,6 +446,9 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, String> {
 }
 
 impl Config {
+    /// Points this config at worker `index`'s own directories. Called by the
+    /// `Launcher` closure in parallel mode with the 0-based worker index; the
+    /// workspace itself was already prepared by [`crate::parallel::prepare_workspace`].
     pub fn select_worker(&mut self, index: usize) -> Result<(), String> {
         let dirs = self
             .worker_dirs

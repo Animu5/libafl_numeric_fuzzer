@@ -1,3 +1,12 @@
+//! Simulation backend: runs the supplied simulator on each built ELF inside a
+//! supervised child process (see [`crate::supervisor`]), then analyzes the produced
+//! VCD in-process with the integrated [`crate::vcdtoggle`] engine. The evaluation
+//! carries the trace map (primary feedback) plus toggle activity and coverage.
+//!
+//! This module also owns the per-run VCD directory lifecycle: creation under
+//! `vcd_dir` (or the simulator working directory), sweeping leftovers of dead
+//! same-host processes, and removal after analysis.
+
 use crate::evaluation::{Evaluation, EvaluationBackend, EvaluationError};
 use crate::vcdtoggle::{self, excludes::Excluded};
 #[allow(unused_imports)]
@@ -10,9 +19,13 @@ use std::{
     time::Duration,
 };
 
+/// Cap for captured stdout/stderr of child processes (kept for diagnostics).
 pub(crate) const OUTPUT_LIMIT: usize = 64 * 1024;
+/// Consecutive candidate failures (simulator timeout/nonzero exit) before the campaign aborts.
 pub(crate) const MAX_CANDIDATE_FAILURES: u32 = 10;
+/// Consecutive measurement failures (missing/unreadable VCD, analysis error) before abort.
 pub(crate) const MAX_MEASUREMENT_FAILURES: u32 = 5;
+/// Prefix of per-run VCD directories: `<prefix><host>-<pid>-<random>`.
 pub(crate) const VCD_DIR_PREFIX: &str = "numeric-fuzzer-vcd-";
 
 /// Hostname used to attribute per-run VCD directories to a host in shared filesystems.
@@ -31,6 +44,8 @@ pub(crate) fn hostname() -> String {
     }
 }
 
+/// Whether `pid` exists: signal 0 succeeds if the process exists (EPERM counts as
+/// alive, only ESRCH means dead).
 pub(crate) fn pid_is_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -106,6 +121,7 @@ pub struct SimulationConfig {
     pub simulator_timeout: Duration,
 }
 
+/// The simulation backend (see the module docs for the pipeline).
 pub struct SimulationBackend {
     config: SimulationConfig,
     excluded: Excluded,
@@ -114,6 +130,8 @@ pub struct SimulationBackend {
 }
 
 impl SimulationBackend {
+    /// Validates the configuration (paths, scope, timeout, `{elf}`/`{vcd}`
+    /// placeholders) and loads the exclusion file; any problem is fatal.
     pub fn new(mut config: SimulationConfig) -> Result<Self, EvaluationError> {
         let cwd = std::env::current_dir().map_err(|e| {
             EvaluationError::Fatal(format!("Cannot resolve current directory: {e}"))
@@ -178,6 +196,8 @@ impl SimulationBackend {
         })
     }
 
+    /// Test-only evaluation path: runs the simulator directly in this process
+    /// (no supervisor child) and analyzes the VCD in-process.
     #[cfg(test)]
     pub(crate) fn run_direct(
         &self,
@@ -407,6 +427,7 @@ impl EvaluationBackend for SimulationBackend {
     }
 }
 
+/// Resolves `path` against `cwd` unless it is already absolute.
 pub(crate) fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_owned()
@@ -415,6 +436,7 @@ pub(crate) fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// Whether the raw bytes of `arg` contain `needle` (used for `{elf}`/`{vcd}` checks).
 pub(crate) fn contains(arg: &OsStr, needle: &[u8]) -> bool {
     use std::os::unix::ffi::OsStrExt;
     arg.as_bytes()
@@ -422,6 +444,7 @@ pub(crate) fn contains(arg: &OsStr, needle: &[u8]) -> bool {
         .any(|part| part == needle)
 }
 
+/// Replaces every `{elf}`/`{vcd}` occurrence in `arg` with the absolute paths.
 pub(crate) fn expand(arg: &OsStr, elf: &Path, vcd: &Path) -> OsString {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let mut result = Vec::new();
