@@ -2,6 +2,18 @@
 
 Notable changes are summarized here. Earlier history is available in Git.
 
+## 0.10.1
+
+### Fixed
+
+- Broker crash in parallel mode with `--monitor print`: ll_mp's broker timeout
+  hook calls `monitor.display(..., ClientId(0))` (the broker's own id, absent
+  from the per-client stats map), `SimplePrintingMonitor` propagates the
+  resulting `KeyNotFound`, and ll_mp `.expect()`s the hook result — killing the
+  broker and then every worker ("receiver/broker could not process our sent
+  llmp messages"). `DynMonitor::display` now logs display errors at debug level
+  and always returns `Ok`, so no monitor can take the broker down.
+
 ## 0.10.0
 
 ### Changed

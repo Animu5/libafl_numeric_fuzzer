@@ -183,7 +183,15 @@ impl Monitor for DynMonitor {
         name: &str,
         client_id: ClientId,
     ) -> Result<(), Error> {
-        self.0.display(stats, name, client_id)
+        // Never propagate a display error: ll_mp `.expect()`s the broker hooks'
+        // result in its timeout loop, so an error here kills the whole broker
+        // (and then every worker). The broker heartbeat calls `display` with the
+        // broker's own `ClientId(0)`, which is not in the per-client stats map;
+        // monitors like `SimplePrintingMonitor` return `KeyNotFound` for that.
+        if let Err(error) = self.0.display(stats, name, client_id) {
+            tracing::debug!("Monitor display for {name} (client {client_id:?}): {error}");
+        }
+        Ok(())
     }
 }
 
@@ -509,4 +517,29 @@ where
     fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, manager)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The broker heartbeat calls `display` with the broker's own `ClientId(0)`,
+    /// which is not in the per-client stats map. `DynMonitor` must swallow the
+    /// resulting error instead of letting ll_mp's broker panic on it.
+    #[test]
+    fn monitor_display_errors_never_propagate() {
+        for mut monitor in [
+            DynMonitor(Box::new(SimplePrintingMonitor {})),
+            DynMonitor(Box::new(LoggingMonitor::new(Duration::from_secs(60)))),
+            DynMonitor(Box::new(NopMonitor {})),
+        ] {
+            let mut stats = ClientStatsManager::default();
+            // Empty stats map, broker id: exactly the heartbeat situation.
+            assert!(
+                monitor
+                    .display(&mut stats, "Broker Heartbeat", ClientId(0))
+                    .is_ok()
+            );
+        }
+    }
 }
