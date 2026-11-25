@@ -38,6 +38,8 @@ fn selected_simulation_builds_and_evaluates_a_grammar_input_without_hardware() {
         .args([
             "--grammar-seeds",
             "4",
+            "--isa-gate",
+            "/bin/cat",
             "--riscv-toolpath",
             "/opt/riscv",
             "--solutions-path",
@@ -130,6 +132,8 @@ fn log_level_and_log_monitor_write_progress_to_the_log_file() {
         .args([
             "--grammar-seeds",
             "4",
+            "--isa-gate",
+            "/bin/cat",
             "--riscv-toolpath",
             "/opt/riscv",
             "--solutions-path",

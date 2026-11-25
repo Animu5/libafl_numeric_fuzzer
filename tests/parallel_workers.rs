@@ -72,6 +72,8 @@ fn base_args(root: &Path, template: &Path, workspace: &Path, solutions: &Path) -
         template.as_os_str().to_os_string(),
         "--grammar-seeds".into(),
         "4".into(),
+        "--isa-gate".into(),
+        "/bin/cat".into(),
         "--riscv-toolpath".into(),
         "/opt/riscv".into(),
         "--solutions-path".into(),
@@ -217,6 +219,7 @@ cp "{}/trace.vcd" "$2"
         .arg(root.join("build-0"))
         .args([
             "--grammar-seeds", "4",
+            "--isa-gate", "/bin/cat",
             "--riscv-toolpath", "/opt/riscv",
             "--solutions-path",
         ])

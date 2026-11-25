@@ -11,6 +11,11 @@ solutions_path = "./simulation-solutions"
 # grammar_depth = 512
 # Number of grammar-generated inputs in the initial corpus (default: 64)
 # grammar_seeds = 64
+# ISA gate (required): reads a candidate program on stdin, fixes crashing snippets
+# (memory addresses/alignment), prints the fixed program on stdout, exit 0;
+# exit nonzero = snippet rejected and skipped.
+isa_gate = "/path/to/atnwalk/build/isagate"
+# isa_gate_timeout_ms = 5000
 
 # log_file = "fuzzer.log"
 # snippet_dir = "./snippets"  # keep every generated snippet as NNNNNN.S (debugging)

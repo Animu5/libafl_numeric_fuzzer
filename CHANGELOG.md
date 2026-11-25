@@ -25,6 +25,15 @@ Notable changes are summarized here. Earlier history is available in Git.
   into a complete assembly program written as `src/snippet.S` (no `init.inc`
   include). `--grammar-depth` (default 512) must exceed the grammar's minimum
   derivation size (~350 for the bundled grammar).
+- ISA gate: `--isa-gate` (required) runs every grammar-generated program through
+  an external gate executable before it is built. Contract: candidate program
+  on stdin, fixed program on stdout, exit 0; nonzero or timeout
+  (`--isa-gate-timeout-ms`, default 5000) = the snippet is rejected and skipped
+  (counted in `Shared::isa_gate_rejections`, logged at debug). The gate runs in
+  its own process group and is SIGKILLed on timeout (`supervisor::run_process_with_stdin`).
+  The fixed program is what gets written to `src/snippet.S`, built, measured,
+  and persisted as the global best. The gate binary itself lives in the
+  asltgen-afl-proxy project (`atnwalk/cmd/isagate`).
 
 ## 0.10.1
 

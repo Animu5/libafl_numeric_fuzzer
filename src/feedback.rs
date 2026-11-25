@@ -13,19 +13,26 @@ use libafl::{
     feedbacks::{Feedback, StateInitializer},
 };
 use libafl_bolts::Named;
-use std::{borrow::Cow, cell::RefCell, path::PathBuf, rc::Rc};
+use std::{
+    borrow::Cow,
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+};
 
 /// State shared between the harness and the feedback.
 #[derive(Debug, Default)]
 pub struct Shared {
     /// Validated evaluation of the last run; `None` if it was not measured.
     pub evaluation: RefCell<Option<Evaluation>>,
-    /// Assembly text decoded from the last input; `None` if it could not be decoded.
+    /// Assembly text (after the ISA gate) of the last input; `None` if it was rejected or failed.
     pub assembly: RefCell<Option<String>>,
     /// Unrecoverable harness error; makes the next `is_interesting` abort the fuzz loop.
     pub fatal: RefCell<Option<String>>,
-    /// Raw input bytes of the last run, used to persist the global best.
+    /// Input bytes of the last run (the fixed assembly text), used to persist the global best.
     pub input: RefCell<Vec<u8>>,
+    /// How many inputs the ISA gate rejected so far (skipped, never built).
+    pub isa_gate_rejections: Cell<u64>,
 }
 
 /// Scores each run by the evaluation that the harness stores in `shared`.

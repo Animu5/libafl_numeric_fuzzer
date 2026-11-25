@@ -1,10 +1,12 @@
-//! The per-input harness: unparses the grammar input into assembly text, builds
+//! The per-input harness: unparses the grammar input into assembly text, runs it
+//! through the ISA gate (which fixes crashing snippets or rejects them), builds
 //! the ELF with the snippet builder, runs the selected evaluation backend, and
 //! stores the outcome in [`Shared`] for the feedback to pick up.
 
 use crate::{
     evaluation::{EvaluationBackend, EvaluationError, Metric},
     feedback::Shared,
+    isagate::IsaGate,
     snippet::SnippetBuilder,
 };
 use libafl::{executors::ExitKind, generators::nautilus::NautilusContext, inputs::NautilusInput};
@@ -18,11 +20,13 @@ pub struct Harness {
     /// Grammar context used to unparse a [`NautilusInput`] into assembly text.
     /// Shared with the worker's generator and mutators via `Rc`.
     pub grammar: Rc<NautilusContext>,
+    /// External ISA gate that fixes or rejects the unparsed snippet.
+    pub gate: IsaGate,
 }
 
 impl Harness {
     /// Builds and evaluates one input, storing the outcome in `shared` (evaluation,
-    /// assembly, input text) for the feedback; failures are recorded there or
+    /// fixed assembly, input text) for the feedback; failures are recorded there or
     /// logged, so the exit kind is always `Ok`.
     pub fn run(&mut self, input: &NautilusInput) -> ExitKind {
         *self.shared.evaluation.borrow_mut() = None;
@@ -33,8 +37,24 @@ impl Harness {
         let mut bytes = Vec::new();
         input.unparse(&self.grammar, &mut bytes);
         let assembly = String::from_utf8_lossy(&bytes).into_owned();
+
+        // Run the ISA gate: it fixes the snippet (memory addresses, alignment)
+        // or rejects it when it cannot be fixed.
+        let fixed = match self.gate.check(&assembly) {
+            Ok(fixed) => fixed,
+            Err(e) => {
+                self.shared.isa_gate_rejections.set(self.shared.isa_gate_rejections.get() + 1);
+                tracing::debug!(
+                    "Skipping input of {} bytes: {e} (rejections so far: {})",
+                    assembly.len(),
+                    self.shared.isa_gate_rejections.get()
+                );
+                return ExitKind::Ok;
+            }
+        };
+        let bytes = fixed.as_bytes();
         let head = &bytes[..bytes.len().min(16)];
-        let elf = match self.builder.build_from_source(&assembly) {
+        let elf = match self.builder.build_from_source(&fixed) {
             Ok(elf) => elf,
             Err(e) => {
                 tracing::warn!(
@@ -62,9 +82,9 @@ impl Harness {
                 }
                 *self.shared.assembly.borrow_mut() =
                     self.builder.last_assembly().map(str::to_string);
-                // The persisted "input bytes" are the assembly text, so the global
-                // best input file stays human-readable in grammar mode.
-                self.shared.input.borrow_mut().extend_from_slice(&bytes);
+                // The persisted "input bytes" are the fixed assembly text, so the
+                // global best input file stays human-readable in grammar mode.
+                self.shared.input.borrow_mut().extend_from_slice(bytes);
                 *self.shared.evaluation.borrow_mut() = Some(result);
             }
             Err(EvaluationError::Candidate(message)) => {
@@ -88,11 +108,12 @@ impl Harness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluation::Evaluation;
+    use crate::{evaluation::Evaluation, isagate::IsaGate};
     use std::{
         cell::RefCell,
         collections::VecDeque,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     struct FakeBackend {
@@ -148,11 +169,14 @@ mod tests {
                     Ok(Evaluation::power_delta(2.0).unwrap()),
                     Err(EvaluationError::Candidate("failed".into())),
                     Err(EvaluationError::Fatal("unrecoverable".into())),
+                    Ok(Evaluation::power_delta(3.0).unwrap()),
                 ]),
                 paths: paths.clone(),
             }),
             shared: shared.clone(),
             grammar: grammar.clone(),
+            // Passthrough gate: the unparsed text passes through unchanged.
+            gate: IsaGate::new("/bin/cat".into(), Duration::from_millis(5000)),
         };
         harness.run(&gen_input(&grammar, 1));
         assert_eq!(
@@ -178,6 +202,13 @@ mod tests {
         harness.run(&gen_input(&grammar, 4));
         assert!(shared.evaluation.borrow().is_none());
         assert_eq!(shared.fatal.borrow().as_deref(), Some("unrecoverable"));
+        assert_eq!(paths.borrow().len(), 3);
+
+        // A rejecting gate skips the input before any build happens.
+        harness.gate = IsaGate::new("/bin/false".into(), Duration::from_millis(5000));
+        harness.run(&gen_input(&grammar, 5));
+        assert!(shared.evaluation.borrow().is_none());
+        assert_eq!(shared.isa_gate_rejections.get(), 1);
         assert_eq!(paths.borrow().len(), 3);
         std::fs::remove_dir_all(dir).unwrap();
     }

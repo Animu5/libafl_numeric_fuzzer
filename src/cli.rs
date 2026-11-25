@@ -75,6 +75,16 @@ pub struct Args {
     #[arg(long)]
     grammar_seeds: Option<usize>,
 
+    /// ISA gate executable: reads a candidate assembly program on stdin, fixes what
+    /// would crash (memory addresses/alignment), prints the fixed program on stdout,
+    /// exit 0; exit nonzero means the snippet is rejected. Required in grammar mode.
+    #[arg(long)]
+    isa_gate: Option<PathBuf>,
+
+    /// Timeout for one ISA gate invocation in milliseconds (default: 5000)
+    #[arg(long)]
+    isa_gate_timeout_ms: Option<u64>,
+
     /// RISC-V toolchain directory, passed to `make` as the `RISCV` environment variable
     #[arg(long)]
     riscv_toolpath: Option<PathBuf>,
@@ -183,6 +193,10 @@ pub struct Config {
     pub grammar_depth: usize,
     /// Number of grammar-generated inputs in the initial corpus.
     pub grammar_seeds: usize,
+    /// ISA gate executable (required): stdin = candidate program, stdout = fixed program.
+    pub isa_gate: PathBuf,
+    /// Timeout for one ISA gate invocation.
+    pub isa_gate_timeout_ms: u64,
     pub riscv_toolpath: PathBuf,
     pub solutions_path: PathBuf,
     pub snippet_dir: Option<PathBuf>,
@@ -282,6 +296,16 @@ impl Args {
             .unwrap_or(DEFAULT_GRAMMAR_SEEDS);
         if grammar_seeds == 0 {
             return Err("--grammar-seeds must be at least 1".into());
+        }
+        // The ISA gate is required: grammar-generated programs are only built
+        // after the gate has fixed them. Existence is checked at startup.
+        let isa_gate = require("isa-gate", self.isa_gate.or(file.isa_gate))?;
+        let isa_gate_timeout_ms = self
+            .isa_gate_timeout_ms
+            .or(file.isa_gate_timeout_ms)
+            .unwrap_or(5000);
+        if isa_gate_timeout_ms == 0 {
+            return Err("--isa-gate-timeout-ms must be nonzero".into());
         }
 
         let exec_timeout_ms = self
@@ -447,6 +471,8 @@ impl Args {
             grammar,
             grammar_depth,
             grammar_seeds,
+            isa_gate,
+            isa_gate_timeout_ms,
             riscv_toolpath: require(
                 "riscv-toolpath",
                 self.riscv_toolpath.or(file.riscv_toolpath),
@@ -529,6 +555,7 @@ mod tests {
     fn common() -> Args {
         Args {
             assembly_environment: Some("build".into()),
+            isa_gate: Some("/bin/cat".into()),
             riscv_toolpath: Some("riscv".into()),
             solutions_path: Some("solutions".into()),
             ..Args::default()
@@ -595,6 +622,7 @@ mod tests {
         .unwrap();
         let config = Args {
             assembly_environment: Some("build".into()),
+            isa_gate: Some("/bin/cat".into()),
             riscv_toolpath: Some("riscv".into()),
             solutions_path: Some("solutions".into()),
             ..cli
@@ -770,6 +798,27 @@ mod tests {
         .unwrap();
         let config = simulation().merge(file).unwrap();
         assert_eq!((config.grammar_depth, config.grammar_seeds), (3, 7));
+    }
+
+    #[test]
+    fn isa_gate_is_required_and_its_timeout_is_validated() {
+        // Missing --isa-gate is an error.
+        let mut args = simulation();
+        args.isa_gate = None;
+        assert!(args
+            .merge(Args::default())
+            .unwrap_err()
+            .contains("--isa-gate"));
+        // Default timeout is 5000 ms; zero is rejected.
+        let config = simulation().merge(Args::default()).unwrap();
+        assert_eq!(config.isa_gate, PathBuf::from("/bin/cat"));
+        assert_eq!(config.isa_gate_timeout_ms, 5000);
+        let mut args = simulation();
+        args.isa_gate_timeout_ms = Some(0);
+        assert!(args
+            .merge(Args::default())
+            .unwrap_err()
+            .contains("isa-gate-timeout-ms"));
     }
 
     #[test]

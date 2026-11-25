@@ -20,8 +20,10 @@ tree from the JSON grammar (`--grammar`, default `grammars/riscv64g.json`, conve
 the ANTLR grammar `grammars/RISCV64G.g4` by `tools/g4_to_nautilus.py`). For every fuzz
 input, both backends first build an ELF:
 
-1. unparses the grammar tree into RISC-V assembly and writes it as `<assembly-environment>/src/snippet.S` (the grammar emits a complete program with `_start:`, so no `init.inc` is included);
-2. runs `make` in the assembly environment (with `RISCV` set to `--riscv-toolpath`) to build `snippet.elf`;
+1. unparses the grammar tree into RISC-V assembly;
+2. runs the ISA gate (`--isa-gate`, required) on it: the gate executes the program on its ISA model, fixes what would crash (misaligned/out-of-map memory accesses get a clamped offset or an inserted `li` with a valid address), and prints the corrected program; snippets it cannot fix are rejected and skipped (the gate is the `atnwalk/cmd/isagate` tool from the asltgen-afl-proxy project);
+3. writes the fixed program as `<assembly-environment>/src/snippet.S` (the grammar emits a complete program with `_start:`, so no `init.inc` is included);
+4. runs `make` in the assembly environment (with `RISCV` set to `--riscv-toolpath`) to build `snippet.elf`;
 For the default hardware backend it then:
 
 1. resets the target through OpenOCD and loads the ELF;
@@ -40,7 +42,7 @@ inputs instantly over shared memory, and are restarted automatically on crash.
 A build template is copied into isolated per-worker workspaces; each worker keeps
 its own corpus alongside a shared global best; see `RUNNING.md`.
 
-Inputs that cannot be built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
+Inputs rejected by the ISA gate or that cannot be built are logged (debug level) and skipped, with the rejection count in the log. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
 The corpus starts with `--grammar-seeds` (default 64) inputs generated from the grammar, which are then mutated with Nautilus's random and recursion mutators (subtree replacement and re-expansion of nonterminals). Interesting inputs are saved to the solutions directory: on hardware an input is interesting when it sets a new best power delta (the delta is in the file name); in simulation an input is interesting when its trace map covers something new (the toggle activity is in the file name when it is also the best). Every saved input is accompanied by its assembly as `<name>.S`, and the assembly of the current best input is kept up to date as `best.S`, so the best snippet survives an interrupt (Ctrl-C).
 
