@@ -11,7 +11,7 @@ use std::{
 };
 
 #[test]
-fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
+fn selected_simulation_builds_and_evaluates_a_grammar_input_without_hardware() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let build = root.join("build");
@@ -36,8 +36,8 @@ fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
         .args(["--backend", "simulation", "--assembly-environment"])
         .arg(&build)
         .args([
-            "--atndecode-path",
-            "/bin/cat",
+            "--grammar-seeds",
+            "4",
             "--riscv-toolpath",
             "/opt/riscv",
             "--solutions-path",
@@ -128,8 +128,8 @@ fn log_level_and_log_monitor_write_progress_to_the_log_file() {
         .args(["--backend", "simulation", "--assembly-environment"])
         .arg(root.join("build"))
         .args([
-            "--atndecode-path",
-            "/bin/cat",
+            "--grammar-seeds",
+            "4",
             "--riscv-toolpath",
             "/opt/riscv",
             "--solutions-path",

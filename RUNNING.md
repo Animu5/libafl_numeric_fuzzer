@@ -5,7 +5,7 @@
 Both backends need:
 
 * Rust and Cargo;
-* a RISC-V toolchain, `make` and the `atndecode` decoder;
+* a RISC-V toolchain and `make`;
 * an assembly environment directory with a Makefile that builds `snippet.elf` from `src/snippet.S`.
 
 The default hardware backend additionally needs OpenOCD, a debug adapter, a
@@ -53,7 +53,9 @@ hardware or use `--list-scopes`.
 Set these in the config file or on the command line:
 
 * `assembly_environment`: directory containing the Makefile. For each input the fuzzer writes `src/snippet.S` there (the `src` directory must exist), runs `make -B` and loads `snippet.elf`;
-* `atndecode_path`: decoder that reads the bitstream on stdin and writes assembly to stdout;
+* `grammar`: Nautilus JSON grammar the inputs are generated from (default `grammars/riscv64g.json`, converted from `grammars/RISCV64G.g4` by `tools/g4_to_nautilus.py`);
+* `grammar_depth`: Nautilus tree depth — must exceed the grammar's minimum derivation size (~350 for the bundled grammar) and caps the generated program size (default 512);
+* `grammar_seeds`: number of grammar-generated inputs in the initial corpus (default 64);
 * `riscv_toolpath`: RISC-V toolchain directory, passed to `make` as the environment variable `RISCV`.
 
 For hardware, OpenOCD must be able to read the ELF in `assembly_environment`.
@@ -87,9 +89,11 @@ See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
 ## Fuzzing Behaviour
 
-The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, then evaluated: loaded and measured on hardware, simulated and analyzed in simulation mode. The decoder and `make` run with `TMPDIR` set to the absolute path of the assembly environment, so the toolchain never writes intermediate files to `/tmp` (a relative `TMPDIR` is ignored by the toolchain, which then falls back to `/tmp`). Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures (in simulation mode: 10 consecutive simulator failures, 5 consecutive analysis failures).
+The corpus starts with `--grammar-seeds` (default 64) inputs generated from the grammar (`--grammar`, default `grammars/riscv64g.json`). Inputs are parse trees mutated with Nautilus's random and recursion mutators (subtree replacement and re-expansion of nonterminals), unparsed into a complete RISC-V assembly program (the grammar emits `_start:`, the register/float-constant initialization and the data section itself, so no `init.inc` is included), written to `src/snippet.S`, and built into a program, then evaluated: loaded and measured on hardware, simulated and analyzed in simulation mode. `make` runs with `TMPDIR` set to the absolute path of the assembly environment, so the toolchain never writes intermediate files to `/tmp` (a relative `TMPDIR` is ignored by the toolchain, which then falls back to `/tmp`). Inputs that cannot be built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures (in simulation mode: 10 consecutive simulator failures, 5 consecutive analysis failures).
 
-Interesting inputs are saved to the solutions directory. On hardware an input is interesting when it sets a new best F1 delta; it is logged as `New best measurement delta: <value>` and the delta is in the file name. In simulation an input is interesting when its trace map raises a toggle count never seen before; if it also sets the best toggle activity, the activity is in the file name. Each saved input is also stored as assembly, next to the binary input as `<name>.S` (ready to assemble: it includes `init.inc`). The assembly of the current best input is kept in `best.S`, so on an interrupt (Ctrl-C) the best snippet so far is always on disk.
+To regenerate `grammars/riscv64g.json` after editing the vendored grammar, run `python3 tools/g4_to_nautilus.py grammars/RISCV64G.g4 grammars/riscv64g.json` and commit the result.
+
+Interesting inputs are saved to the solutions directory. On hardware an input is interesting when it sets a new best F1 delta; it is logged as `New best measurement delta: <value>` and the delta is in the file name. In simulation an input is interesting when its trace map raises a toggle count never seen before; if it also sets the best toggle activity, the activity is in the file name. Each saved input is also stored as assembly, next to the input as `<name>.S` (a complete program: it does not include `init.inc`). The assembly of the current best input is kept in `best.S`, so on an interrupt (Ctrl-C) the best snippet so far is always on disk.
 
 ## Logging
 
@@ -103,7 +107,7 @@ Every log line carries the process role in brackets after the level, e.g. `2026-
 
 ## Saving snippets
 
-`--snippet-dir <DIR>` (TOML `snippet_dir`) additionally saves every decoded snippet as `NNNNNN.S`, numbered in execution order, so you can inspect what was built and loaded. The number appears in the debug log (`Saved snippet to …`), which lets you match a crash to its snippet. Snippets are not deleted, so this can use a lot of disk space on long runs.
+`--snippet-dir <DIR>` (TOML `snippet_dir`) additionally saves every generated snippet as `NNNNNN.S`, numbered in execution order, so you can inspect what was built and loaded. The number appears in the debug log (`Saved snippet to …`), which lets you match a crash to its snippet. Snippets are not deleted, so this can use a lot of disk space on long runs.
 
 ## Run timeout
 
@@ -123,7 +127,7 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 
 ## Source layout
 
-`cli.rs` (arguments/config), `feedback.rs` (trace-map coverage feedback with a numeric best score), `harness.rs` (per-input build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `simulation.rs` (simulator supervision + in-process VCD analysis), `vcdtoggle/` (integrated VCD toggle engine: metrics + trace map), `supervisor.rs` (simulator child process), `snippet.rs` (decode and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `parallel.rs` (workspace setup + global best), `main.rs` (wiring and logging).
+`cli.rs` (arguments/config), `feedback.rs` (trace-map coverage feedback with a numeric best score), `harness.rs` (per-input unparse, build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `simulation.rs` (simulator supervision + in-process VCD analysis), `vcdtoggle/` (integrated VCD toggle engine: metrics + trace map), `supervisor.rs` (simulator child process), `snippet.rs` (write assembly source and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `parallel.rs` (workspace setup + global best), `main.rs` (wiring, Nautilus stages and logging), `grammars/` + `tools/g4_to_nautilus.py` (grammar and converter).
 
 ## Simulation backend
 
@@ -191,8 +195,8 @@ simulator timeout, or if the fuzzer exits during simulation, it terminates the
 active process group and reaps the direct child. The supervisor is
 isolated from the fuzzer's terminal process group, so an interrupt to the fuzzer
 also closes the pipe. Configure LibAFL's outer timeout above build time plus the
-simulator deadline and the analysis time. The existing decoder and `make` still
-have no individual timeouts and are not supervised by this mechanism.
+simulator deadline and the analysis time. `make` still has no individual
+timeout and is not supervised by this mechanism.
 
 Per-run VCD directories are named `numeric-fuzzer-vcd-<host>-<pid>-*`; at the start
 of every evaluation, leftovers of dead same-host processes (e.g. a supervisor

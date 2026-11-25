@@ -15,6 +15,16 @@ Notable changes are summarized here. Earlier history is available in Git.
 - Grammar-based fuzzing (work in progress on the `grammar` branch): the libafl
   `nautilus` feature is enabled so `NautilusInput`/`NautilusGenerator`/
   `NautilusRandomMutator`/`NautilusRecursionMutator` are available.
+- The input pipeline no longer uses `atndecode`: inputs are `NautilusInput`
+  parse trees generated from a Nautilus JSON grammar (`--grammar`, default
+  `grammars/riscv64g.json`, converted from the vendored ANTLR grammar
+  `grammars/RISCV64G.g4` by `tools/g4_to_nautilus.py`). The initial corpus is
+  generated from the grammar (`--grammar-seeds`, default 64; `--seed` and
+  `--atndecode-path` are removed), mutation uses the Nautilus random and
+  recursion mutators instead of havoc, and the harness unparses each tree
+  into a complete assembly program written as `src/snippet.S` (no `init.inc`
+  include). `--grammar-depth` (default 512) must exceed the grammar's minimum
+  derivation size (~350 for the bundled grammar).
 
 ## 0.10.1
 

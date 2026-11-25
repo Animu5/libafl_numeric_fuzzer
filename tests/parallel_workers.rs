@@ -70,8 +70,8 @@ fn base_args(root: &Path, template: &Path, workspace: &Path, solutions: &Path) -
         workspace.as_os_str().to_os_string(),
         "--assembly-environment".into(),
         template.as_os_str().to_os_string(),
-        "--atndecode-path".into(),
-        "/bin/cat".into(),
+        "--grammar-seeds".into(),
+        "4".into(),
         "--riscv-toolpath".into(),
         "/opt/riscv".into(),
         "--solutions-path".into(),
@@ -216,7 +216,7 @@ cp "{}/trace.vcd" "$2"
         ])
         .arg(root.join("build-0"))
         .args([
-            "--atndecode-path", "/bin/cat",
+            "--grammar-seeds", "4",
             "--riscv-toolpath", "/opt/riscv",
             "--solutions-path",
         ])

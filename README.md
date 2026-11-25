@@ -15,9 +15,12 @@ secondary score.
 
 ## Current Implementation
 
-For every fuzz input, both backends first build an ELF:
+Inputs are generated from a grammar (LibAFL's Nautilus engine): each input is a parse
+tree from the JSON grammar (`--grammar`, default `grammars/riscv64g.json`, converted from
+the ANTLR grammar `grammars/RISCV64G.g4` by `tools/g4_to_nautilus.py`). For every fuzz
+input, both backends first build an ELF:
 
-1. pipes the bitstream into `atndecode`, which produces RISC-V assembly (`<assembly-environment>/src/snippet.S`);
+1. unparses the grammar tree into RISC-V assembly and writes it as `<assembly-environment>/src/snippet.S` (the grammar emits a complete program with `_start:`, so no `init.inc` is included);
 2. runs `make` in the assembly environment (with `RISCV` set to `--riscv-toolpath`) to build `snippet.elf`;
 For the default hardware backend it then:
 
@@ -37,9 +40,9 @@ inputs instantly over shared memory, and are restarted automatically on crash.
 A build template is copied into isolated per-worker workspaces; each worker keeps
 its own corpus alongside a shared global best; see `RUNNING.md`.
 
-Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
+Inputs that cannot be built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
-The corpus starts with a seed (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Interesting inputs are saved to the solutions directory: on hardware an input is interesting when it sets a new best power delta (the delta is in the file name); in simulation an input is interesting when its trace map covers something new (the toggle activity is in the file name when it is also the best). Every saved input is accompanied by its decoded assembly as `<name>.S`, and the assembly of the current best input is kept up to date as `best.S`, so the best snippet survives an interrupt (Ctrl-C).
+The corpus starts with `--grammar-seeds` (default 64) inputs generated from the grammar, which are then mutated with Nautilus's random and recursion mutators (subtree replacement and re-expansion of nonterminals). Interesting inputs are saved to the solutions directory: on hardware an input is interesting when it sets a new best power delta (the delta is in the file name); in simulation an input is interesting when its trace map covers something new (the toggle activity is in the file name when it is also the best). Every saved input is accompanied by its assembly as `<name>.S`, and the assembly of the current best input is kept up to date as `best.S`, so the best snippet survives an interrupt (Ctrl-C).
 
 ## Project Files
 
@@ -50,7 +53,9 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
   hardware execution and the simulation backend;
 * `src/vcdtoggle/`: integrated VCD toggle analysis (vendored from the
   `vcdtogglemeasure` project) producing metrics and the trace map;
-* `src/snippet.rs`: `atndecode` and `make` steps;
+* `src/snippet.rs`: write the generated assembly and run `make`;
+* `grammars/`, `tools/g4_to_nautilus.py`: the RISC-V grammar (ANTLR source plus
+  the generated Nautilus JSON) and the converter between the two formats;
 * `src/feedback.rs`: trace-map coverage feedback with a numeric best score;
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
 * `src/openocd.rs`: OpenOCD Tcl client;
