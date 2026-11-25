@@ -33,6 +33,11 @@ Notable changes are summarized here. Earlier history is available in Git.
   unified into one `read_bounded(reader, keep_tail)`; the integration tests
   share an `executable` script helper via `tests/common/mod.rs`.
 - `TODO.md` removed (all items are done) and the README no longer references it.
+- README/RUNNING refreshed against the code: feedback description now covers the
+  trace map, the file lists include `parallel.rs`/`supervisor.rs`, stale
+  "not yet tested on final hardware" notes removed, the executor-timeout default
+  corrected to 900000 ms, and the fuzzing-behaviour section describes what gets
+  saved for both backends.
 
 - Source files consolidated: `logging.rs` and `monitor.rs` merged into
   `main.rs`, `global_best.rs` merged into `parallel.rs`, and `simulation.rs`

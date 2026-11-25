@@ -14,9 +14,7 @@ The Unix simulation backend needs a built Chipyard simulator; the VCD analysis
 runs in-process through the integrated `vcdtoggle` module, no external analyzer
 binary is needed.
 
-The full setup has not yet been tested on the final hardware.
-
-LibAFL dependencies are specified in `Cargo.toml`.
+Dependencies are specified in `Cargo.toml`.
 
 ## Build the Project
 
@@ -77,8 +75,6 @@ The current Rust code connects to the OpenOCD Tcl interface at:
 
 The selected OpenOCD configuration must enable the Tcl interface on port `6666`.
 
-The correct interface and target configurations for the final hardware still need to be confirmed.
-
 ## Run the Program
 
 After OpenOCD is running, open another terminal in the project folder and run, for example:
@@ -91,9 +87,9 @@ See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
 ## Fuzzing Behaviour
 
-The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, loaded and measured. The decoder and `make` run with `TMPDIR` set to the absolute path of the assembly environment, so the toolchain never writes intermediate files to `/tmp` (a relative `TMPDIR` is ignored by the toolchain, which then falls back to `/tmp`). Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
+The corpus starts with `--seed` (a file or a directory of files; default: 16 zero bytes). Inputs are mutated with havoc mutators, decoded and built into a program, then evaluated: loaded and measured on hardware, simulated and analyzed in simulation mode. The decoder and `make` run with `TMPDIR` set to the absolute path of the assembly environment, so the toolchain never writes intermediate files to `/tmp` (a relative `TMPDIR` is ignored by the toolchain, which then falls back to `/tmp`). Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures (in simulation mode: 10 consecutive simulator failures, 5 consecutive analysis failures).
 
-Inputs with a new best F1 delta are logged as `New best measurement delta: <value>` and saved to the solutions directory, with the delta in the file name. Each saved input is also stored as assembly, next to the binary input as `<name>.S` (ready to assemble: it includes `init.inc`). The assembly of the current best input is kept in `best.S`, so on an interrupt (Ctrl-C) the best snippet so far is always on disk.
+Interesting inputs are saved to the solutions directory. On hardware an input is interesting when it sets a new best F1 delta; it is logged as `New best measurement delta: <value>` and the delta is in the file name. In simulation an input is interesting when its trace map raises a toggle count never seen before; if it also sets the best toggle activity, the activity is in the file name. Each saved input is also stored as assembly, next to the binary input as `<name>.S` (ready to assemble: it includes `init.inc`). The assembly of the current best input is kept in `best.S`, so on an interrupt (Ctrl-C) the best snippet so far is always on disk.
 
 ## Logging
 
@@ -109,7 +105,7 @@ Logs go to `fuzzer.log` (override with `--log-file`); the file is overwritten on
 
 ## Run timeout
 
-LibAFL kills the process if one run takes longer than its executor timeout (default 5 s), which a build, a program load and two scope acquisitions exceed. `--exec-timeout-ms` (default 900000) sets it; it must be larger than the sum of build time, load time, both acquisitions and `--settle-ms` (simulation: build time plus the simulator deadline; the in-process VCD analysis is a bounded single pass and adds to it). A timeout shows up in the log as `Timeout in fuzz run.`
+LibAFL's executor timeout bounds one complete run (build plus evaluation). `--exec-timeout-ms` (default 900000) sets it; it must be larger than the sum of build time, load time, both acquisitions and `--settle-ms` (simulation: build time plus the simulator deadline; the in-process VCD analysis is a bounded single pass and adds to it). A timeout shows up in the log as `Timeout in fuzz run.`
 
 ## Oscilloscope (VISA)
 

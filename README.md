@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project is a prototype LibAFL-based fuzzer that uses a numeric measurement instead of traditional code coverage as feedback.
+This project is a prototype LibAFL-based fuzzer. The hardware backend uses a numeric measurement (power delta) as feedback; the simulation backend uses the VCD trace map as coverage-style feedback plus a numeric score.
 
 The intended use case is to generate or mutate inputs for a RISC-V target and maximize a measured value such as power consumption.
 
@@ -39,7 +39,7 @@ its own corpus alongside a shared global best; see `RUNNING.md`.
 
 Inputs that cannot be decoded or built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures.
 
-The corpus starts with a seed (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Inputs with a new best delta are saved to the solutions directory with the delta in the file name. Every saved input is accompanied by its decoded assembly as `<name>.S`, and the assembly of the current best input is kept up to date as `best.S`, so the best snippet survives an interrupt (Ctrl-C).
+The corpus starts with a seed (`--seed` file or directory of files, default 16 zero bytes) that is mutated with LibAFL's havoc mutators. Interesting inputs are saved to the solutions directory: on hardware an input is interesting when it sets a new best power delta (the delta is in the file name); in simulation an input is interesting when its trace map covers something new (the toggle activity is in the file name when it is also the best). Every saved input is accompanied by its decoded assembly as `<name>.S`, and the assembly of the current best input is kept up to date as `best.S`, so the best snippet survives an interrupt (Ctrl-C).
 
 ## Project Files
 
@@ -54,6 +54,8 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 * `src/feedback.rs`: trace-map coverage feedback with a numeric best score;
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
 * `src/openocd.rs`: OpenOCD Tcl client;
+* `src/parallel.rs`: worker workspace setup and global-best tracking;
+* `src/supervisor.rs`: the supervised simulator child process;
 * `fuzzer.example.toml`, `fuzzer.simulation.example.toml`, `slurm-fuzzing.example.sbatch`, `RUNNING.md` (setup and execution), `CHANGELOG.md` (notable changes).
 
 ## Current Limitations
