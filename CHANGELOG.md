@@ -32,6 +32,7 @@ Notable changes are summarized here. Earlier history is available in Git.
   `src/vcdtoggle/` code); the supervisor's two bounded-output readers were
   unified into one `read_bounded(reader, keep_tail)`; the integration tests
   share an `executable` script helper via `tests/common/mod.rs`.
+- `TODO.md` removed (all items are done) and the README no longer references it.
 
 - Source files consolidated: `logging.rs` and `monitor.rs` merged into
   `main.rs`, `global_best.rs` merged into `parallel.rs`, and `simulation.rs`

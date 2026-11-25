@@ -54,11 +54,9 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 * `src/feedback.rs`: trace-map coverage feedback with a numeric best score;
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
 * `src/openocd.rs`: OpenOCD Tcl client;
-* `fuzzer.example.toml`, `fuzzer.simulation.example.toml`, `slurm-fuzzing.example.sbatch`, `RUNNING.md` (setup and execution), `TODO.md` (remaining work), `CHANGELOG.md` (notable changes).
+* `fuzzer.example.toml`, `fuzzer.simulation.example.toml`, `slurm-fuzzing.example.sbatch`, `RUNNING.md` (setup and execution), `CHANGELOG.md` (notable changes).
 
 ## Current Limitations
-
-The full setup has not yet been tested end to end on the final hardware, and the OpenOCD interface and target configuration still need to be confirmed. See `TODO.md`.
 
 The simulation score is toggle activity (changes per simulated second), not
 watts. The integrated analyzer may report zero activity when no counted signal
