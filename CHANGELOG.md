@@ -25,15 +25,21 @@ Notable changes are summarized here. Earlier history is available in Git.
   into a complete assembly program written as `src/snippet.S` (no `init.inc`
   include). `--grammar-depth` (default 512) must exceed the grammar's minimum
   derivation size (~350 for the bundled grammar).
-- ISA gate: `--isa-gate` (required) runs every grammar-generated program through
-  an external gate executable before it is built. Contract: candidate program
-  on stdin, fixed program on stdout, exit 0; nonzero or timeout
-  (`--isa-gate-timeout-ms`, default 5000) = the snippet is rejected and skipped
-  (counted in `Shared::isa_gate_rejections`, logged at debug). The gate runs in
-  its own process group and is SIGKILLed on timeout (`supervisor::run_process_with_stdin`).
-  The fixed program is what gets written to `src/snippet.S`, built, measured,
-  and persisted as the global best. The gate binary itself lives in the
-  asltgen-afl-proxy project (`atnwalk/cmd/isagate`).
+- ISA gate is now built in: every grammar-generated program is validated and
+  fixed in-process by the new `src/isagate/` module before it is built —
+  `machine.rs` is a Rust port of the Go `RISCV64GMachine` ISA model
+  (`atnwalk/grammars/emulator`), `gate.rs` classifies each program line and
+  replays it on the machine, exactly like `atnwalk/cmd/isagate` in the
+  asltgen-afl-proxy project did (memory offsets clamped into the valid range
+  and realigned, `li xN, <valid address>` inserted when the base register
+  cannot hold one, branches emitted as absolute target PCs, immediates wrapped
+  to their field widths, including the `li` two-halves `Decode(2^32-1)`
+  quirk). Unfixable programs are rejected and skipped (counted in
+  `Shared::isa_gate_rejections`, logged at debug). The fixed program is what
+  gets written to `src/snippet.S`, built, measured, and persisted as the
+  global best. The external `--isa-gate`/`--isa-gate-timeout-ms` options and
+  the stdin/stdout gate subprocess (`supervisor::run_process_with_stdin`) are
+  removed, so no gate binary needs to be built or shipped.
 
 ## 0.10.1
 

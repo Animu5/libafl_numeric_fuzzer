@@ -9,10 +9,10 @@ scope_timeout_ms = 20000
 # grammar = "grammars/riscv64g.json"  # default; see tools/g4_to_nautilus.py
 # grammar_depth = 512  # default; must exceed the grammar's minimum derivation size
 # grammar_seeds = 64  # default; size of the generated initial corpus
-# ISA gate (required): stdin = candidate program, stdout = fixed program, exit 0;
-# nonzero = snippet rejected. Built from asltgen-afl-proxy (atnwalk/cmd/isagate).
-isa_gate = "/path/to/atnwalk/build/isagate"
-# isa_gate_timeout_ms = 5000  # per-invocation timeout
+# The ISA gate is built in (src/isagate/, a Rust port of atnwalk/cmd/isagate from
+# the asltgen-afl-proxy project): every generated program is validated and fixed
+# in-process before it is written to src/snippet.S; unfixable programs are
+# rejected and skipped. No external gate binary is needed.
 
 # Optional (defaults shown)
 # backend = "hardware"

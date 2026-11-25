@@ -6,7 +6,7 @@
 use crate::{
     evaluation::{EvaluationBackend, EvaluationError, Metric},
     feedback::Shared,
-    isagate::IsaGate,
+    isagate,
     snippet::SnippetBuilder,
 };
 use libafl::{executors::ExitKind, generators::nautilus::NautilusContext, inputs::NautilusInput};
@@ -20,8 +20,6 @@ pub struct Harness {
     /// Grammar context used to unparse a [`NautilusInput`] into assembly text.
     /// Shared with the worker's generator and mutators via `Rc`.
     pub grammar: Rc<NautilusContext>,
-    /// External ISA gate that fixes or rejects the unparsed snippet.
-    pub gate: IsaGate,
 }
 
 impl Harness {
@@ -40,7 +38,7 @@ impl Harness {
 
         // Run the ISA gate: it fixes the snippet (memory addresses, alignment)
         // or rejects it when it cannot be fixed.
-        let fixed = match self.gate.check(&assembly) {
+        let fixed = match isagate::gate(&assembly) {
             Ok(fixed) => fixed,
             Err(e) => {
                 self.shared.isa_gate_rejections.set(self.shared.isa_gate_rejections.get() + 1);
@@ -108,12 +106,11 @@ impl Harness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{evaluation::Evaluation, isagate::IsaGate};
+    use crate::evaluation::Evaluation;
     use std::{
         cell::RefCell,
         collections::VecDeque,
         path::{Path, PathBuf},
-        time::Duration,
     };
 
     struct FakeBackend {
@@ -129,9 +126,10 @@ mod tests {
         }
     }
 
-    /// A one-rule grammar whose programs all unparse to the same `nop` snippet.
-    fn test_grammar() -> NautilusContext {
-        NautilusContext::new(5, &[vec!["PROG".to_string(), "nop\n".to_string()]])
+    /// A one-rule grammar whose programs all unparse to the same snippet.
+    /// `mv x1,x2` passes the ISA gate unchanged; `bogus` is rejected by it.
+    fn test_grammar(source: &str) -> NautilusContext {
+        NautilusContext::new(5, &[vec!["PROG".to_string(), source.to_string()]])
     }
 
     /// Generates one input from the test grammar with a seeded rand.
@@ -161,7 +159,7 @@ mod tests {
         .unwrap();
         let shared = Rc::new(Shared::default());
         let paths = Rc::new(RefCell::new(Vec::new()));
-        let grammar = Rc::new(test_grammar());
+        let grammar = Rc::new(test_grammar("mv x1,x2\n"));
         let mut harness = Harness {
             builder: SnippetBuilder::new(dir.clone(), "/opt/riscv".into()),
             backend: Box::new(FakeBackend {
@@ -175,16 +173,14 @@ mod tests {
             }),
             shared: shared.clone(),
             grammar: grammar.clone(),
-            // Passthrough gate: the unparsed text passes through unchanged.
-            gate: IsaGate::new("/bin/cat".into(), Duration::from_millis(5000)),
         };
         harness.run(&gen_input(&grammar, 1));
         assert_eq!(
             shared.evaluation.borrow().as_ref().unwrap().score(),
             2.0
         );
-        assert!(shared.assembly.borrow().as_ref().unwrap().contains("nop"));
-        assert_eq!(shared.input.borrow().as_slice(), b"nop\n");
+        assert!(shared.assembly.borrow().as_ref().unwrap().contains("mv"));
+        assert_eq!(shared.input.borrow().as_slice(), b"mv x1,x2\n");
         harness.run(&gen_input(&grammar, 2));
         assert!(shared.evaluation.borrow().is_none());
         assert!(shared.assembly.borrow().is_none());
@@ -204,9 +200,10 @@ mod tests {
         assert_eq!(shared.fatal.borrow().as_deref(), Some("unrecoverable"));
         assert_eq!(paths.borrow().len(), 3);
 
-        // A rejecting gate skips the input before any build happens.
-        harness.gate = IsaGate::new("/bin/false".into(), Duration::from_millis(5000));
-        harness.run(&gen_input(&grammar, 5));
+        // An input the ISA gate rejects is skipped before any build happens.
+        let bad_grammar = Rc::new(test_grammar("bogus\n"));
+        harness.grammar = bad_grammar.clone();
+        harness.run(&gen_input(&bad_grammar, 5));
         assert!(shared.evaluation.borrow().is_none());
         assert_eq!(shared.isa_gate_rejections.get(), 1);
         assert_eq!(paths.borrow().len(), 3);

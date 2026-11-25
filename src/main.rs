@@ -513,14 +513,6 @@ where
             .map_err(context("Could not load grammar"))?,
     );
 
-    // The ISA gate is required: it fixes crashing snippets or rejects them.
-    let gate = isagate::IsaGate::new(
-        config.isa_gate.clone(),
-        Duration::from_millis(config.isa_gate_timeout_ms),
-    );
-    gate.check_executable()
-        .map_err(|e| Error::illegal_argument(format!("--isa-gate: {e}")))?;
-
     let shared = Rc::new(Shared::default());
     let mut builder =
         SnippetBuilder::new(config.assembly_environment, config.riscv_toolpath);
@@ -535,7 +527,6 @@ where
         backend,
         shared: shared.clone(),
         grammar: grammar.clone(),
-        gate,
     };
 
     let corpus = OnDiskCorpus::<NautilusInput>::new(&config.solutions_path)?;

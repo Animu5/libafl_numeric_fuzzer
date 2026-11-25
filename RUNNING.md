@@ -6,8 +6,10 @@ Both backends need:
 
 * Rust and Cargo;
 * a RISC-V toolchain and `make`;
-* the ISA gate binary (`--isa-gate`, required), built from the asltgen-afl-proxy project (`atnwalk/cmd/isagate`);
 * an assembly environment directory with a Makefile that builds `snippet.elf` from `src/snippet.S`.
+
+The ISA gate is built into the fuzzer (`src/isagate/`, a Rust port of `atnwalk/cmd/isagate`
+from the asltgen-afl-proxy project), so no external gate binary is needed.
 
 The default hardware backend additionally needs OpenOCD, a debug adapter, a
 supported target, and a Teledyne oscilloscope reachable through NI-VISA.
@@ -57,8 +59,6 @@ Set these in the config file or on the command line:
 * `grammar`: Nautilus JSON grammar the inputs are generated from (default `grammars/riscv64g.json`, converted from `grammars/RISCV64G.g4` by `tools/g4_to_nautilus.py`);
 * `grammar_depth`: Nautilus tree depth — must exceed the grammar's minimum derivation size (~350 for the bundled grammar) and caps the generated program size (default 512);
 * `grammar_seeds`: number of grammar-generated inputs in the initial corpus (default 64);
-* `isa_gate`: **required** ISA gate executable. Contract: candidate program on stdin, fixed program on stdout, exit 0; exit nonzero = snippet rejected (skipped, counted in the debug log). Built from the asltgen-afl-proxy project (`atnwalk/cmd/isagate`);
-* `isa_gate_timeout_ms`: timeout for one gate invocation (default 5000);
 * `riscv_toolpath`: RISC-V toolchain directory, passed to `make` as the environment variable `RISCV`.
 
 For hardware, OpenOCD must be able to read the ELF in `assembly_environment`.
@@ -92,7 +92,7 @@ See `fuzzer.example.toml` for all options. Command-line flags override the file.
 
 ## Fuzzing Behaviour
 
-The corpus starts with `--grammar-seeds` (default 64) inputs generated from the grammar (`--grammar`, default `grammars/riscv64g.json`). Inputs are parse trees mutated with Nautilus's random and recursion mutators (subtree replacement and re-expansion of nonterminals), unparsed into a complete RISC-V assembly program (the grammar emits `_start:`, the register/float-constant initialization and the data section itself, so no `init.inc` is included). Every program then goes through the ISA gate (`--isa-gate`, required): the gate executes it on its ISA model and fixes crashing constructs (memory operands get a clamped offset or an inserted `li xN, <valid address>` when the base register cannot hold one; misaligned `ld`/`lw`/`lh` offsets are realigned), then the fixed program is written to `src/snippet.S` and built, then evaluated: loaded and measured on hardware, simulated and analyzed in simulation mode. Programs the gate cannot fix are rejected and skipped (counted as rejections in the debug log); they are never built. `make` runs with `TMPDIR` set to the absolute path of the assembly environment, so the toolchain never writes intermediate files to `/tmp` (a relative `TMPDIR` is ignored by the toolchain, which then falls back to `/tmp`). Inputs that cannot be built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures (in simulation mode: 10 consecutive simulator failures, 5 consecutive analysis failures).
+The corpus starts with `--grammar-seeds` (default 64) inputs generated from the grammar (`--grammar`, default `grammars/riscv64g.json`). Inputs are parse trees mutated with Nautilus's random and recursion mutators (subtree replacement and re-expansion of nonterminals), unparsed into a complete RISC-V assembly program (the grammar emits `_start:`, the register/float-constant initialization and the data section itself, so no `init.inc` is included). Every program then goes through the built-in ISA gate (`src/isagate/`): the gate replays it line by line on its ISA model and fixes crashing constructs (memory operands get a clamped offset or an inserted `li xN, <valid address>` when the base register cannot hold one; misaligned `ld`/`lw`/`lh` offsets are realigned; branches emit absolute target PCs; immediates are wrapped to their instruction field widths), then the fixed program is written to `src/snippet.S` and built, then evaluated: loaded and measured on hardware, simulated and analyzed in simulation mode. Programs the gate cannot fix are rejected and skipped (counted as rejections in the debug log); they are never built. `make` runs with `TMPDIR` set to the absolute path of the assembly environment, so the toolchain never writes intermediate files to `/tmp` (a relative `TMPDIR` is ignored by the toolchain, which then falls back to `/tmp`). Inputs that cannot be built are logged and skipped. If loading or resuming a program fails (e.g. it crashed the target), the target is reset with `reset halt` and the input is skipped. The run aborts if that reset fails (e.g. OpenOCD died), after 10 consecutive target failures, or after 5 consecutive measurement failures (in simulation mode: 10 consecutive simulator failures, 5 consecutive analysis failures).
 
 To regenerate `grammars/riscv64g.json` after editing the vendored grammar, run `python3 tools/g4_to_nautilus.py grammars/RISCV64G.g4 grammars/riscv64g.json` and commit the result.
 
@@ -130,7 +130,7 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 
 ## Source layout
 
-`cli.rs` (arguments/config), `feedback.rs` (trace-map coverage feedback with a numeric best score), `harness.rs` (per-input unparse, build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `simulation.rs` (simulator supervision + in-process VCD analysis), `vcdtoggle/` (integrated VCD toggle engine: metrics + trace map), `supervisor.rs` (simulator child process), `snippet.rs` (write assembly source and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `parallel.rs` (workspace setup + global best), `isagate.rs` (ISA gate subprocess: stdin/stdout/exit-code contract, timeout, process-group kill), `main.rs` (wiring, Nautilus stages and logging), `grammars/` + `tools/g4_to_nautilus.py` (grammar and converter).
+`cli.rs` (arguments/config), `feedback.rs` (trace-map coverage feedback with a numeric best score), `harness.rs` (per-input unparse, build and evaluation dispatch), `evaluation.rs` (backend contract), `hardware.rs` (load and idle/run measurement), `simulation.rs` (simulator supervision + in-process VCD analysis), `vcdtoggle/` (integrated VCD toggle engine: metrics + trace map), `supervisor.rs` (simulator child process), `snippet.rs` (write assembly source and make), `measurement.rs`, `openocd.rs`, `scope.rs` (VISA), `parallel.rs` (workspace setup + global best), `isagate/` (built-in ISA gate: `machine.rs` is the ISA model, `gate.rs` classifies and replays each program line), `main.rs` (wiring, Nautilus stages and logging), `grammars/` + `tools/g4_to_nautilus.py` (grammar and converter).
 
 ## Simulation backend
 

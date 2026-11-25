@@ -8,7 +8,7 @@ use crate::evaluation::EvaluationError;
 use crate::simulation::OUTPUT_LIMIT;
 use std::{
     ffi::OsString,
-    io::{self, Read, Write},
+    io::{self, Read},
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     sync::{
@@ -98,37 +98,9 @@ pub(crate) fn run_process(
     timeout: Duration,
     cancelled: &AtomicBool,
 ) -> io::Result<ProcessOutput> {
-    run_process_inner(command, timeout, cancelled, None)
-}
-
-/// Like [`run_process`], but pipes `input` to the child's stdin (written from a
-/// thread so a full stdout pipe cannot deadlock us; a broken pipe is fine when
-/// the child exits without reading everything).
-pub(crate) fn run_process_with_stdin(
-    command: &mut Command,
-    timeout: Duration,
-    cancelled: &AtomicBool,
-    input: Vec<u8>,
-) -> io::Result<ProcessOutput> {
-    run_process_inner(command, timeout, cancelled, Some(input))
-}
-
-fn run_process_inner(
-    command: &mut Command,
-    timeout: Duration,
-    cancelled: &AtomicBool,
-    input: Option<Vec<u8>>,
-) -> io::Result<ProcessOutput> {
     use std::os::unix::process::CommandExt;
-    match &input {
-        Some(_) => {
-            command.stdin(Stdio::piped());
-        }
-        None => {
-            command.stdin(Stdio::null());
-        }
-    }
     command
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
@@ -137,13 +109,6 @@ fn run_process_inner(
     }
     let mut child = command.spawn()?;
     let group = child.id() as libc::pid_t;
-    let stdin = child.stdin.take();
-    let stdin_writer = input.map(|data| {
-        thread::spawn(move || {
-            let mut stdin = stdin.expect("stdin is piped");
-            let _ = stdin.write_all(&data);
-        })
-    });
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let out_thread = thread::spawn(move || read_bounded(stdout, false));
@@ -176,10 +141,6 @@ fn run_process_inner(
     };
     // Close inherited pipes even if a successful leader left child processes behind.
     let cleanup = kill_group(group);
-    if let Some(writer) = stdin_writer {
-        // A broken pipe is fine: the child may exit without reading all input.
-        let _ = writer.join();
-    }
     let stdout = out_thread
         .join()
         .map_err(|_| io::Error::other("stdout reader panicked"))?;
