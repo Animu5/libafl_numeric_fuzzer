@@ -180,7 +180,8 @@ mod tests {
             2.0
         );
         assert!(shared.assembly.borrow().as_ref().unwrap().contains("mv"));
-        assert_eq!(shared.input.borrow().as_slice(), b"mv x1,x2\n");
+        // The persisted input bytes are the gate-fixed assembly (with labels).
+        assert_eq!(shared.input.borrow().as_slice(), b".Lbr0:\nmv x1,x2\n");
         harness.run(&gen_input(&grammar, 2));
         assert!(shared.evaluation.borrow().is_none());
         assert!(shared.assembly.borrow().is_none());

@@ -318,9 +318,21 @@ impl RiscV64Machine {
         Ok(())
     }
 
+    /// Whether `mnemonic` is a branch instruction (`beq`/`bne`/`blt`/`bltu`/`bge`/`bgeu`).
+    pub fn is_branch(mnemonic: &str) -> bool {
+        matches!(
+            mnemonic,
+            "beq" | "bne" | "blt" | "bltu" | "bge" | "bgeu"
+        )
+    }
+
     /// Immediate/shift/branch instructions (`addi xD,xS,imm`, `slli …`, `beq …`);
-    /// returns the value to emit (the clamped immediate, or the absolute branch
-    /// target PC for branches — gas accepts an absolute branch operand).
+    /// returns the value the Go model computed (the clamped immediate, or the
+    /// absolute branch target PC for branches). Note: the gate does not emit the
+    /// branch return value — branches are emitted as label references resolved by
+    /// gas against the real layout (see `gate.rs`), because with compressed
+    /// instructions the 4-byte/4-aligned PC model does not match the assembled
+    /// program.
     pub fn parse_int_imm3(
         &mut self,
         mnemonic: &str,
@@ -405,7 +417,8 @@ impl RiscV64Machine {
 
     /// Branch fix-up, ported from `doBranch`: clamp to the 4-bit signed field,
     /// never land below START_ADDRESS, clamp to ±16, then align the target to 4.
-    /// Returns the absolute target PC (emitted as the branch operand).
+    /// Returns the absolute target PC. The gate keeps this only for PC bookkeeping
+    /// fidelity with the Go model; the emitted branch operand is a label instead.
     fn branch(&mut self, imm: i64) -> Result<i64, MachineError> {
         let mut imm = clamp_signed(imm, BRANCH_BITS);
         let mut target_pc = self.program_counter + imm;

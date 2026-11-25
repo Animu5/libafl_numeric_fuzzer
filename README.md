@@ -21,7 +21,7 @@ the ANTLR grammar `grammars/RISCV64G.g4` by `tools/g4_to_nautilus.py`). For ever
 input, both backends first build an ELF:
 
 1. unparses the grammar tree into RISC-V assembly;
-2. runs the built-in ISA gate (`src/isagate/`, a Rust port of `atnwalk/cmd/isagate` from the asltgen-afl-proxy project) on it: the gate replays the program line by line on its ISA model, fixes what would crash (misaligned/out-of-map memory accesses get a clamped offset or an inserted `li` with a valid address; branches emit absolute target PCs; immediates are wrapped to their field widths), and returns the corrected program; snippets it cannot fix are rejected and skipped;
+2. runs the built-in ISA gate (`src/isagate/`, a Rust port of `atnwalk/cmd/isagate` from the asltgen-afl-proxy project) on it: the gate replays the program line by line on its ISA model, fixes what would crash (misaligned/out-of-map memory accesses get a clamped offset or an inserted `li` with a valid address; immediates are wrapped to their field widths), and labels every statement `.Lbr{j}:` so branches can target any statement — the branch operand becomes `.Lbr{imm mod n}`, i.e. the parse tree's immediate picks a forward or backward target, resolved by gas against the real (compressed-instruction) layout so targets always land on an instruction boundary; the gate returns the corrected program; snippets it cannot fix are rejected and skipped;
 3. writes the fixed program as `<assembly-environment>/src/snippet.S` (the grammar emits a complete program with `_start:`, so no `init.inc` is included);
 4. runs `make` in the assembly environment (with `RISCV` set to `--riscv-toolpath`) to build `snippet.elf`;
 For the default hardware backend it then:

@@ -40,6 +40,17 @@ Notable changes are summarized here. Earlier history is available in Git.
   global best. The external `--isa-gate`/`--isa-gate-timeout-ms` options and
   the stdin/stdout gate subprocess (`supervisor::run_process_with_stdin`) are
   removed, so no gate binary needs to be built or shipped.
+- Branch labels: the ISA gate now emits a `.Lbr{j}:` label before every
+  statement and rewrites each branch operand to `.Lbr{imm mod n}` (`imm` = the
+  branch immediate carried by the Nautilus parse tree, `n` = statement count),
+  so the fuzz input directly picks a forward or backward target — including
+  loops back to `_start:` and self-loops. gas resolves labels against the real
+  layout, which matters with compressed (RVC) instructions: the previous
+  absolute-target-PC emission assumed 4-byte instructions and could land
+  mid-instruction and trap. Statements skipped by a branch never execute,
+  which is fine — the goal is many diverse snippets running without an
+  exception. Deliberate divergence from the Go gate, which emitted the
+  absolute target PC as a decimal operand.
 
 ## 0.10.1
 

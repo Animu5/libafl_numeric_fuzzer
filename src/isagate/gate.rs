@@ -9,8 +9,12 @@
 //!   when the base register cannot hold a valid address at all, a
 //!   `li xN, MIDDLE_VALID_MEM` line is inserted (x0 becomes x10 — it can never
 //!   hold an address);
-//! * branch instructions emit the absolute target PC (gas accepts an absolute
-//!   branch operand and computes the offset);
+//! * every statement gets a `.Lbr{j}:` label and branch operands are rewritten
+//!   to `.Lbr{imm mod n}` — the immediate carried by the parse tree picks the
+//!   target statement, forward or backward. gas resolves the label against the
+//!   real layout, so with compressed (RVC) instructions the target always lands
+//!   on an instruction boundary (the 4-byte PC model would not match the
+//!   assembled program, and an absolute target could trap mid-instruction);
 //! * immediates are clamped to their instruction field widths;
 //! * lines that are not statements (labels, `j _start`, `fld` init,
 //!   `.section`/`.align`, `fNconst: .quad …`) pass through unchanged.
@@ -242,11 +246,45 @@ fn classify(line: &str) -> Result<Stmt, GateError> {
     Ok(st)
 }
 
+/// One recorded output entry from pass 1 of [`gate`].
+enum Out {
+    /// A non-statement line (labels, `j _start`, directives, …), passed through.
+    Other(String),
+    /// An emitted statement whose text is final (may be several lines, e.g. a
+    /// `li` fix-up followed by the memory instruction).
+    Stmt(String),
+    /// A branch statement; its operand is rewritten to a label in pass 2.
+    Branch {
+        mnemonic: String,
+        rd: usize,
+        rs1: usize,
+        /// The raw immediate from the parse tree; selects the target label.
+        imm: i64,
+    },
+}
+
+/// The label name for the statement with index `j`. `.L` prefix: a gas local
+/// label, so it never collides with `_start`/`_end`/`fNconst` and stays out of
+/// the symbol table.
+fn label(j: usize) -> String {
+    format!(".Lbr{j}")
+}
+
 /// Runs the ISA gate on a candidate program and returns the fixed program.
+///
+/// Two passes: pass 1 replays every line on the machine (fixing memory operands,
+/// `li` insertions and immediate widths) and records what to emit; pass 2 emits
+/// a `.Lbr{j}:` label before *every* statement and rewrites each branch operand
+/// to `.Lbr{imm mod n}` (`imm` = the branch immediate from the parse tree,
+/// `n` = statement count). The fuzz input therefore picks the branch target,
+/// forward or backward. Labels are resolved by gas against the real layout, so
+/// targets always land on an instruction boundary — with compressed (RVC)
+/// instructions the 4-byte PC model would not match the assembled program, and
+/// an absolute target could land mid-instruction and trap.
 pub fn gate(text: &str) -> Result<String, GateError> {
-    let machine = RiscV64Machine::new();
-    let mut machine = machine;
-    let mut out = String::with_capacity(text.len());
+    // Pass 1: classify and replay every line on the machine, recording the output.
+    let mut machine = RiscV64Machine::new();
+    let mut entries = Vec::new();
     let mut statements = 0usize;
     for line in text.lines() {
         if line.is_empty() {
@@ -254,8 +292,7 @@ pub fn gate(text: &str) -> Result<String, GateError> {
         }
         let st = classify(line)?;
         if st.kind == Kind::Other {
-            out.push_str(line);
-            out.push('\n');
+            entries.push(Out::Other(line.to_string()));
             continue;
         }
         statements += 1;
@@ -263,75 +300,73 @@ pub fn gate(text: &str) -> Result<String, GateError> {
             return Err(GateError(format!("more than {MAX_STATEMENTS} statements")));
         }
         let m = &st.mnemonic;
-        match st.kind {
+        let entry = match st.kind {
             Kind::Other => unreachable!("handled above"),
             Kind::IntImm2 => {
                 let emitted = machine
                     .parse_int_imm2(m, st.rd, st.imm)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&format!("{m} x{},{emitted}\n", st.rd));
+                Out::Stmt(format!("{m} x{},{emitted}\n", st.rd))
             }
             Kind::Int2 => {
                 machine
                     .parse_int2(m, st.rd, st.rs1)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
             Kind::Int3 => {
                 machine
                     .parse_int3(m, st.rd, st.rs1, st.rs2)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
+            Kind::IntImm3 if RiscV64Machine::is_branch(m) => Out::Branch {
+                mnemonic: m.clone(),
+                rd: st.rd,
+                rs1: st.rs1,
+                imm: st.imm,
+            },
             Kind::IntImm3 => {
                 let emitted = machine
                     .parse_int_imm3(m, st.rd, st.rs1, st.imm)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&format!("{m} x{},x{},{emitted}\n", st.rd, st.rs1));
+                Out::Stmt(format!("{m} x{},x{},{emitted}\n", st.rd, st.rs1))
             }
             Kind::Float2Int => {
                 machine
                     .parse_float2int(m, st.rd, st.rs1)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
             Kind::Int2Float => {
                 machine
                     .parse_int2float(m, st.rd, st.rs1)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
             Kind::FCompare => {
                 machine
                     .parse_fcompare(m, st.rd, st.rs1, st.rs2)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
             Kind::Float2 => {
                 machine
                     .parse_float2(m, st.rd, st.rs1)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
             Kind::Float3 => {
                 machine
                     .parse_float3(m, st.rd, st.rs1, st.rs2)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
             Kind::Float4 => {
                 machine
                     .parse_float4(m, st.rd, st.rs1, st.rs2, st.rs3)
                     .map_err(|e| GateError(format!("{line}: {e}")))?;
-                out.push_str(&st.line);
-                out.push('\n');
+                Out::Stmt(format!("{}\n", st.line))
             }
             Kind::IntMem | Kind::FloatMem => {
                 let (off, needs_li) = if st.kind == Kind::IntMem {
@@ -344,18 +379,53 @@ pub fn gate(text: &str) -> Result<String, GateError> {
                         .map_err(|e| GateError(format!("{line}: {e}")))?
                 };
                 let mut rs1 = st.rs1;
+                let mut text = String::new();
                 if needs_li {
                     // x0 can never hold a valid address; use x10 instead.
                     if rs1 == 0 {
                         rs1 = 10;
                     }
-                    out.push_str(&format!("li x{rs1},{MIDDLE_VALID_MEM}\n"));
+                    text.push_str(&format!("li x{rs1},{MIDDLE_VALID_MEM}\n"));
                 }
                 if st.kind == Kind::IntMem {
-                    out.push_str(&format!("{m} x{},{off}(x{rs1})\n", st.rd));
+                    text.push_str(&format!("{m} x{},{off}(x{rs1})\n", st.rd));
                 } else {
-                    out.push_str(&format!("{m} f{},{off}(x{rs1})\n", st.rd));
+                    text.push_str(&format!("{m} f{},{off}(x{rs1})\n", st.rd));
                 }
+                Out::Stmt(text)
+            }
+        };
+        entries.push(entry);
+    }
+
+    // Pass 2: emit, placing a label before every statement and rewriting branch
+    // operands to the label the input immediate selects (imm mod n).
+    let n = statements as i64;
+    let mut out = String::with_capacity(text.len() + statements * 8);
+    let mut j = 0usize;
+    for entry in entries {
+        match entry {
+            Out::Other(line) => {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            Out::Stmt(text) => {
+                out.push_str(&label(j));
+                out.push_str(":\n");
+                out.push_str(&text);
+                j += 1;
+            }
+            Out::Branch {
+                mnemonic,
+                rd,
+                rs1,
+                imm,
+            } => {
+                out.push_str(&label(j));
+                out.push_str(":\n");
+                let target = imm.rem_euclid(n) as usize;
+                out.push_str(&format!("{mnemonic} x{rd},x{rs1},{}\n", label(target)));
+                j += 1;
             }
         }
     }
@@ -373,15 +443,17 @@ mod tests {
 
     #[test]
     fn passthrough_statements_are_unchanged() {
+        // Statement lines pass through unchanged; every statement gets a label.
         let input = "li x1,5\nadd x1,x1,x2\nmv x3,x1\nfadd.s f1,f2,f3\n";
-        assert_eq!(gate(input).unwrap(), input);
+        let expected = ".Lbr0:\nli x1,5\n.Lbr1:\nadd x1,x1,x2\n.Lbr2:\nmv x3,x1\n.Lbr3:\nfadd.s f1,f2,f3\n";
+        assert_eq!(gate(input).unwrap(), expected);
     }
 
     #[test]
     fn li_immediate_round_trips() {
         // 0x80002000 = LOWER_VALID_MEM
         let input = "li x1,2147491840\n";
-        assert_eq!(gate(input).unwrap(), input);
+        assert_eq!(gate(input).unwrap(), ".Lbr0:\nli x1,2147491840\n");
     }
 
     #[test]
@@ -403,13 +475,36 @@ mod tests {
     }
 
     #[test]
-    fn branch_emits_absolute_target_pc() {
-        // First statement: pc = 0x80000000 + 4, imm 4 -> target 0x80000008.
-        let out = gate("beq x1,x2,4\n").unwrap();
-        assert!(
-            out.contains("beq x1,x2,2147483656\n"),
-            "branch target not emitted: {out:?}"
+    fn branch_target_is_a_forward_label_from_the_input_immediate() {
+        // n = 3 statements; the branch (statement 0) has imm 4, target 4 mod 3 = 1.
+        let out = gate("beq x1,x2,4\naddi x1,x2,1\naddi x3,x4,2\n").unwrap();
+        assert_eq!(
+            out,
+            ".Lbr0:\nbeq x1,x2,.Lbr1\n.Lbr1:\naddi x1,x2,1\n.Lbr2:\naddi x3,x4,2\n"
         );
+    }
+
+    #[test]
+    fn branch_target_can_be_backward() {
+        // n = 3; the branch (statement 2) has imm -3, target -3 mod 3 = 0.
+        let out = gate("addi x1,x2,1\naddi x3,x4,2\nbne x1,x2,-3\n").unwrap();
+        assert_eq!(
+            out,
+            ".Lbr0:\naddi x1,x2,1\n.Lbr1:\naddi x3,x4,2\n.Lbr2:\nbne x1,x2,.Lbr0\n"
+        );
+    }
+
+    #[test]
+    fn single_statement_branch_targets_itself() {
+        // n = 1: any immediate maps to the only statement, a self-loop.
+        let out = gate("beq x1,x2,7\n").unwrap();
+        assert_eq!(out, ".Lbr0:\nbeq x1,x2,.Lbr0\n");
+    }
+
+    #[test]
+    fn every_statement_gets_exactly_one_label() {
+        let out = gate("beq x1,x2,0\nbne x3,x4,1\n").unwrap();
+        assert_eq!(out, ".Lbr0:\nbeq x1,x2,.Lbr0\n.Lbr1:\nbne x3,x4,.Lbr1\n");
     }
 
     #[test]
