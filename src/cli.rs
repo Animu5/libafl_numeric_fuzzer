@@ -9,6 +9,15 @@ use clap::{CommandFactory, Parser, ValueEnum};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+/// Default for `--grammar-depth`. Nautilus needs the tree depth to exceed the
+/// bundled grammar's minimum derivation size (~350 rule applications, mostly the
+/// 32 register inits and 32 float constants); 512 leaves headroom and still caps
+/// generated programs at a few dozen statements.
+pub const DEFAULT_GRAMMAR_DEPTH: usize = 512;
+
+/// Default for `--grammar-seeds`: inputs generated from the grammar as the initial corpus.
+pub const DEFAULT_GRAMMAR_SEEDS: usize = 64;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum BackendKind {
@@ -54,9 +63,17 @@ pub struct Args {
     #[arg(short, long)]
     assembly_environment: Option<PathBuf>,
 
-    /// Path to the tool that decodes the bitstream into RISC-V assembly
-    #[arg(short = 'd', long)]
-    atndecode_path: Option<PathBuf>,
+    /// Nautilus JSON grammar used to generate RISC-V assembly inputs (default: grammars/riscv64g.json)
+    #[arg(long)]
+    grammar: Option<PathBuf>,
+
+    /// Nautilus grammar tree depth: must exceed the grammar's minimum derivation size and caps the generated program size (default: 512)
+    #[arg(long)]
+    grammar_depth: Option<usize>,
+
+    /// Number of inputs generated from the grammar as the initial corpus (default: 64)
+    #[arg(long)]
+    grammar_seeds: Option<usize>,
 
     /// RISC-V toolchain directory, passed to `make` as the `RISCV` environment variable
     #[arg(long)]
@@ -67,13 +84,9 @@ pub struct Args {
     #[arg(short, long)]
     solutions_path: Option<PathBuf>,
 
-    /// Directory where every decoded snippet is saved as NNNNNN.S, for debugging (default: off)
+    /// Directory where every generated snippet is saved as NNNNNN.S, for debugging (default: off)
     #[arg(long)]
     snippet_dir: Option<PathBuf>,
-
-    /// Initial input file, or a directory whose files are all used as seeds (default: 16 zero bytes)
-    #[arg(long)]
-    seed: Option<PathBuf>,
 
     /// Log file (default: fuzzer.log)
     #[arg(long)]
@@ -164,11 +177,15 @@ pub struct Args {
 #[derive(Debug)]
 pub struct Config {
     pub assembly_environment: PathBuf,
-    pub atndecode_path: PathBuf,
+    /// Nautilus JSON grammar the inputs are generated from.
+    pub grammar: PathBuf,
+    /// Grammar tree depth bounding recursion during generation/mutation.
+    pub grammar_depth: usize,
+    /// Number of grammar-generated inputs in the initial corpus.
+    pub grammar_seeds: usize,
     pub riscv_toolpath: PathBuf,
     pub solutions_path: PathBuf,
     pub snippet_dir: Option<PathBuf>,
-    pub seed: Option<PathBuf>,
     pub log_file: PathBuf,
     pub log_level: Option<String>,
     pub monitor: MonitorKind,
@@ -242,10 +259,30 @@ impl Args {
             "assembly-environment",
             self.assembly_environment.or(file.assembly_environment),
         )?;
-        let atndecode_path = require(
-            "atndecode-path",
-            self.atndecode_path.or(file.atndecode_path),
-        )?;
+        let grammar = self
+            .grammar
+            .or(file.grammar)
+            .unwrap_or_else(|| PathBuf::from("grammars/riscv64g.json"));
+        if !grammar.is_file() {
+            return Err(format!(
+                "Grammar file {} is not a file (pass --grammar or set grammar in the config)",
+                grammar.display()
+            ));
+        }
+        let grammar_depth = self
+            .grammar_depth
+            .or(file.grammar_depth)
+            .unwrap_or(DEFAULT_GRAMMAR_DEPTH);
+        if grammar_depth == 0 {
+            return Err("--grammar-depth must be at least 1".into());
+        }
+        let grammar_seeds = self
+            .grammar_seeds
+            .or(file.grammar_seeds)
+            .unwrap_or(DEFAULT_GRAMMAR_SEEDS);
+        if grammar_seeds == 0 {
+            return Err("--grammar-seeds must be at least 1".into());
+        }
 
         let exec_timeout_ms = self
             .exec_timeout_ms
@@ -407,7 +444,9 @@ impl Args {
         };
         Ok(Config {
             assembly_environment,
-            atndecode_path,
+            grammar,
+            grammar_depth,
+            grammar_seeds,
             riscv_toolpath: require(
                 "riscv-toolpath",
                 self.riscv_toolpath.or(file.riscv_toolpath),
@@ -417,7 +456,6 @@ impl Args {
                 self.solutions_path.or(file.solutions_path),
             )?,
             snippet_dir: self.snippet_dir.or(file.snippet_dir),
-            seed: self.seed.or(file.seed),
             log_file: self
                 .log_file
                 .or(file.log_file)
@@ -486,10 +524,11 @@ fn load_file(path: &Path) -> Result<Args, String> {
 mod tests {
     use super::*;
 
+    /// A minimal set of settings; the grammar defaults to grammars/riscv64g.json,
+    /// which exists in the repo, so tests can resolve without extra setup.
     fn common() -> Args {
         Args {
             assembly_environment: Some("build".into()),
-            atndecode_path: Some("decode".into()),
             riscv_toolpath: Some("riscv".into()),
             solutions_path: Some("solutions".into()),
             ..Args::default()
@@ -556,7 +595,6 @@ mod tests {
         .unwrap();
         let config = Args {
             assembly_environment: Some("build".into()),
-            atndecode_path: Some("decode".into()),
             riscv_toolpath: Some("riscv".into()),
             solutions_path: Some("solutions".into()),
             ..cli
@@ -691,6 +729,47 @@ mod tests {
         let config = simulation().merge(Args::default()).unwrap();
         assert_eq!(config.log_level, None);
         assert_eq!(config.monitor, MonitorKind::Tui);
+    }
+
+    #[test]
+    fn grammar_settings_have_defaults_and_are_validated() {
+        // Defaults: repo-relative grammar file, depth 10, 64 seeds.
+        let config = simulation().merge(Args::default()).unwrap();
+        assert!(config.grammar.ends_with("grammars/riscv64g.json"));
+        assert_eq!(
+            (config.grammar_depth, config.grammar_seeds),
+            (DEFAULT_GRAMMAR_DEPTH, DEFAULT_GRAMMAR_SEEDS)
+        );
+
+        let mut args = simulation();
+        args.grammar = Some("does/not/exist.json".into());
+        assert!(args
+            .merge(Args::default())
+            .unwrap_err()
+            .contains("--grammar"));
+        let mut args = simulation();
+        args.grammar_depth = Some(0);
+        assert!(args
+            .merge(Args::default())
+            .unwrap_err()
+            .contains("grammar-depth"));
+        let mut args = simulation();
+        args.grammar_seeds = Some(0);
+        assert!(args
+            .merge(Args::default())
+            .unwrap_err()
+            .contains("grammar-seeds"));
+
+        // CLI overrides the config file.
+        let file: Args = toml::from_str(
+            r#"
+            grammar_depth = 3
+            grammar_seeds = 7
+        "#,
+        )
+        .unwrap();
+        let config = simulation().merge(file).unwrap();
+        assert_eq!((config.grammar_depth, config.grammar_seeds), (3, 7));
     }
 
     #[test]

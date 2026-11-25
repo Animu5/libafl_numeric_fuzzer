@@ -2,13 +2,18 @@
 # Use with: libafl_fuzzer --config fuzzer.simulation.example.toml (CLI flags override these values)
 backend = "simulation"
 assembly_environment = "/path/to/snippet_build"
-atndecode_path = "/path/to/atnwalk/build/riscv64g/bin/decode"
 riscv_toolpath = "/path/to/riscv"
 solutions_path = "./simulation-solutions"
-# seed = "/path/to/seeds"  # file or directory of seed files (default: 16 zero bytes)
+# Grammar the inputs are generated from (Nautilus JSON; default: grammars/riscv64g.json,
+# converted from grammars/RISCV64G.g4 by tools/g4_to_nautilus.py).
+# grammar = "grammars/riscv64g.json"
+# Tree depth: must exceed the grammar's minimum derivation size; caps program size (default: 512)
+# grammar_depth = 512
+# Number of grammar-generated inputs in the initial corpus (default: 64)
+# grammar_seeds = 64
 
 # log_file = "fuzzer.log"
-# snippet_dir = "./snippets"  # keep every decoded snippet as NNNNNN.S (debugging)
+# snippet_dir = "./snippets"  # keep every generated snippet as NNNNNN.S (debugging)
 # Log filter for the log file (default: RUST_LOG if set, else "info"); "debug" shows
 # every snippet build, simulation and in-process VCD analysis, and each skipped input.
 # log_level = "info"

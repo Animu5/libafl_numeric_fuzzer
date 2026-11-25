@@ -1,11 +1,14 @@
 # Use with: libafl_fuzzer --config fuzzer.toml (command-line flags override these values)
 assembly_environment = "/path/to/snippet_build"  # program loaded: <assembly_environment>/snippet.elf
-atndecode_path = "/path/to/atnwalk/build/riscv64g/bin/decode"
 riscv_toolpath = "/path/to/riscv"  # exported to make as RISCV
 solutions_path = "./solutions"
 scope_resource = "USB0::0x05ff::0x1023::SERIAL::INSTR"  # see --list-scopes
-seed = "/path/to/seeds"  # file or directory of seed files
 scope_timeout_ms = 20000
+
+# Grammar-based inputs (Nautilus JSON; inputs are generated, not decoded):
+# grammar = "grammars/riscv64g.json"  # default; see tools/g4_to_nautilus.py
+# grammar_depth = 512  # default; must exceed the grammar's minimum derivation size
+# grammar_seeds = 64  # default; size of the generated initial corpus
 
 # Optional (defaults shown)
 # backend = "hardware"
@@ -15,7 +18,7 @@ scope_timeout_ms = 20000
 # openocd_addr = "127.0.0.1:6666"
 # scope_acquire_timeout_ms = 30000
 # exec_timeout_ms = 900000
-# snippet_dir = "./snippets"  # keep every decoded snippet as NNNNNN.S (debugging)
+# snippet_dir = "./snippets"  # keep every generated snippet as NNNNNN.S (debugging)
 # settle_ms = 100
 
 # Simulation backend only (see fuzzer.simulation.example.toml for these):

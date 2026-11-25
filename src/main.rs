@@ -38,7 +38,6 @@ use feedback::{NumericFeedback, Shared};
 #[cfg(feature = "hardware")]
 use hardware::HardwareBackend;
 use harness::Harness;
-use libafl::mutators::{HavocScheduledMutator, havoc_mutations};
 use libafl::{
     Error,
     corpus::OnDiskCorpus,
@@ -48,10 +47,15 @@ use libafl::{
     },
     executors::InProcessExecutor,
     fuzzer::{Evaluator, Fuzzer, StdFuzzer},
-    inputs::BytesInput,
+    generators::{
+        Generator,
+        nautilus::{NautilusContext, NautilusGenerator},
+    },
+    inputs::NautilusInput,
     monitors::{
         Monitor, NopMonitor, SimplePrintingMonitor, TuiMonitor, stats::manager::ClientStatsManager,
     },
+    mutators::{NautilusRandomMutator, NautilusRecursionMutator},
     schedulers::QueueScheduler,
     stages::mutational::StdMutationalStage,
     state::StdState,
@@ -90,9 +94,10 @@ use tracing_subscriber::{
     registry::LookupSpan,
 };
 
-/// The concrete LibAFL state used by every worker.
+/// The concrete LibAFL state used by every worker: grammar inputs (Nautilus trees)
+/// generated from the JSON grammar, stored serialized in the on-disk corpora.
 type WorkerState =
-    StdState<OnDiskCorpus<BytesInput>, BytesInput, StdRand, OnDiskCorpus<BytesInput>>;
+    StdState<OnDiskCorpus<NautilusInput>, NautilusInput, StdRand, OnDiskCorpus<NautilusInput>>;
 
 /// Returns an error mapper that prefixes the message with `what`.
 fn context<E: fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Error {
@@ -255,42 +260,14 @@ impl Monitor for DynMonitor {
     }
 }
 
-/// Loads the seed file or every regular non-hidden file in the seed directory (sorted by name).
-/// Without a path, a single 16-byte zero input is used.
-fn load_seeds(path: Option<&Path>) -> Result<Vec<BytesInput>, Error> {
-    let Some(path) = path else {
-        return Ok(vec![BytesInput::new(vec![0u8; 16])]);
-    };
-
-    let mut files = if path.is_dir() {
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(path).map_err(context("Could not read seed directory"))? {
-            let entry = entry.map_err(context("Could not read seed directory"))?;
-            let hidden = entry.file_name().to_string_lossy().starts_with('.');
-            if entry.path().is_file() && !hidden {
-                files.push(entry.path());
-            }
-        }
-        files.sort();
-        files
-    } else {
-        vec![path.to_path_buf()]
-    };
-
-    if files.is_empty() {
-        return Err(Error::illegal_argument(format!(
-            "No seed files found in {}",
-            path.display()
-        )));
-    }
-    files
-        .drain(..)
-        .map(|f| {
-            std::fs::read(&f)
-                .map(BytesInput::new)
-                .map_err(context("Could not read seed file"))
-        })
-        .collect()
+/// Generates `count` initial inputs from the grammar, using the state's rand.
+fn generate_seeds(
+    grammar: &NautilusContext,
+    state: &mut WorkerState,
+    count: usize,
+) -> Result<Vec<NautilusInput>, Error> {
+    let mut generator = NautilusGenerator::new(grammar);
+    (0..count).map(|_| generator.generate(state)).collect()
 }
 
 /// Builds the progress monitor selected by `kind`.
@@ -449,8 +426,8 @@ fn launch_parallel(config: Config) -> Result<(), Error> {
 /// `LlmpRestartingEventManager`.
 fn run_worker<EM>(config: Config, manager: &mut EM) -> Result<(), Error>
 where
-    EM: EventFirer<BytesInput, WorkerState>
-        + EventReceiver<BytesInput, WorkerState>
+    EM: EventFirer<NautilusInput, WorkerState>
+        + EventReceiver<NautilusInput, WorkerState>
         + EventRestarter<WorkerState>
         + ProgressReporter<WorkerState>
         + SendExiting,
@@ -527,14 +504,17 @@ where
         }
     };
 
-    let seeds = load_seeds(config.seed.as_deref())?;
+    // Load the Nautilus grammar; every input is a parse tree generated from it.
+    // Shared via Rc between the harness (unparsing), the seed generator, and the
+    // mutators, since NautilusContext is not Clone.
+    let grammar = Rc::new(
+        NautilusContext::from_file(config.grammar_depth, &config.grammar)
+            .map_err(context("Could not load grammar"))?,
+    );
 
     let shared = Rc::new(Shared::default());
-    let mut builder = SnippetBuilder::new(
-        config.assembly_environment,
-        config.atndecode_path,
-        config.riscv_toolpath,
-    );
+    let mut builder =
+        SnippetBuilder::new(config.assembly_environment, config.riscv_toolpath);
     if let Some(dir) = config.snippet_dir {
         builder = builder
             .with_archive(dir)
@@ -545,9 +525,10 @@ where
         builder,
         backend,
         shared: shared.clone(),
+        grammar: grammar.clone(),
     };
 
-    let corpus = OnDiskCorpus::<BytesInput>::new(&config.solutions_path)?;
+    let corpus = OnDiskCorpus::<NautilusInput>::new(&config.solutions_path)?;
     let solutions = OnDiskCorpus::new(config.solutions_path.join("crashes"))?;
 
     let mut feedback = NumericFeedback::new(shared.clone(), config.solutions_path.clone());
@@ -567,7 +548,7 @@ where
 
     let mut fuzzer = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
 
-    let mut target = |input: &BytesInput| harness.run(input);
+    let mut target = |input: &NautilusInput| harness.run(input);
     let mut executor = InProcessExecutor::builder()
         .harness(&mut target)
         .timeout(Duration::from_millis(config.exec_timeout_ms))
@@ -576,13 +557,20 @@ where
         .event_mgr(manager)
         .build()?;
 
+    // Initial corpus: generated from the grammar (there are no seed files in
+    // grammar mode).
+    let seeds = generate_seeds(&grammar, &mut state, config.grammar_seeds)?;
     for seed in seeds {
         fuzzer.add_input(&mut state, &mut executor, manager, seed)?;
     }
 
-    let mut stages = tuple_list!(StdMutationalStage::new(HavocScheduledMutator::new(
-        havoc_mutations()
-    )));
+    // Grammar-aware mutation stages: random subtree replacement and recursion
+    // (re-expanding a nonterminal), both driven by the state's rand. The splice
+    // mutator is not used because it needs NautilusChunksMetadata in the state.
+    let mut stages = tuple_list!(
+        StdMutationalStage::new(NautilusRandomMutator::new(&grammar)),
+        StdMutationalStage::new(NautilusRecursionMutator::new(&grammar)),
+    );
     // The LLMP event manager exchanges inputs between workers inside fuzz_one.
     fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, manager)?;
 
@@ -661,5 +649,29 @@ mod tests {
             output.contains("hello from the worker") && output.contains("answer=42"),
             "log line is missing the message or structured fields: {output:?}"
         );
+    }
+
+    /// The bundled Nautilus grammar (generated from grammars/RISCV64G.g4 by
+    /// tools/g4_to_nautilus.py) must load, generate a parse tree, and unparse to
+    /// a complete assembly program (labels, loop, data section).
+    #[test]
+    fn bundled_grammar_loads_and_generates_assembly() {
+        use libafl::{
+            generators::nautilus::{NautilusContext, NautilusGenerator},
+            state::NopState,
+        };
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/grammars/riscv64g.json");
+        let ctx = NautilusContext::from_file(crate::cli::DEFAULT_GRAMMAR_DEPTH, path)
+            .expect("bundled grammar must load at the default depth");
+        let mut state = NopState::<NautilusInput>::new();
+        let mut generator = NautilusGenerator::new(&ctx);
+        let input = generator.generate(&mut state).expect("generation must work");
+        let mut bytes = Vec::new();
+        input.unparse(&ctx, &mut bytes);
+        let text = String::from_utf8(bytes).expect("grammar output must be UTF-8");
+        assert!(text.contains("_start:"), "missing start label:\n{text}");
+        assert!(text.contains("j _start"), "missing end loop:\n{text}");
+        assert!(text.contains(".section"), "missing data section:\n{text}");
+        assert!(text.contains("li x1,"), "missing register init:\n{text}");
     }
 }
