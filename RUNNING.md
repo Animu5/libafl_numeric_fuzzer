@@ -155,15 +155,17 @@ integrated `vcdtoggle` engine (`src/vcdtoggle/`, vendored from the
 below `--target-scope` (optionally minus `--exclude-signal-file <path>`). Each
 run produces a trace map — one saturating toggle count per traced signal — plus
 the scalar metrics: `toggle_activity` in signal-level changes per simulated
-second (using the last change of a counted signal as the time denominator) and
+second (using the last change of a counted signal as the time denominator),
 `toggle_coverage`, the fraction of bits of counted bit-vector variables that
-changed at least once. The trace map is the primary feedback: an input is
-interesting when it raises any map entry above everything seen before.
-`toggle_activity` is the secondary score used for best tracking; both may be
-zero for an empty selection or missing timing. Keep the scope, exclusions and
-simulation window consistent between runs. Use separate solutions directories
-for hardware, simulation and changed simulation configurations, since their
-scores are not comparable.
+changed at least once, and `map_coverage`, the fraction of traced signals that
+toggled at least once. Coverages are reported as percentages with two digits
+after the decimal point (e.g. `60.00%`). The trace map is the primary feedback:
+an input is interesting when it raises any map entry above everything seen
+before. `toggle_activity` is the secondary score used for best tracking; both
+may be zero for an empty selection or missing timing. Keep the scope,
+exclusions and simulation window consistent between runs. Use separate
+solutions directories for hardware, simulation and changed simulation
+configurations, since their scores are not comparable.
 
 For Chipyard, provide `+max-cycles=<limit>`, `+vcdfile={vcd}` and, when
 using fast loading, `+loadmem={elf}` as simulator arguments, with `{elf}`
@@ -243,9 +245,10 @@ manager respawns it automatically with its serialized state.
 Each worker keeps its own LibAFL corpus and local `best.S` under
 `<solutions_path>/worker-0000`, `worker-0001`, and so on. The shared
 `<solutions_path>/parallel-exchange/global-best.txt` records the full-precision
-toggle activity (the score), the toggle coverage, the worker, and paths to the
-corresponding immutable input and assembly. Global improvements are also
-printed on stderr. The exchange directory
+toggle activity (the score), the toggle coverage and the map coverage (the
+fraction of traced signals that toggled at least once) as percentages with two
+decimals, the worker, and paths to the corresponding immutable input and
+assembly. Global improvements are also printed on stderr. The exchange directory
 must not already exist: use a fresh solutions path for each run, especially if
 simulation settings change. Snippet archives use the same per-worker
 subdirectories. Logging is initialized before forking, so the broker and all

@@ -22,6 +22,11 @@ Notable changes are summarized here. Earlier history is available in Git.
   `best.S` and `parallel-exchange/global-best.txt` (which now records
   `toggle_activity=` first, plus `toggle_coverage=`). The hardware backend is
   unchanged and still uses the power delta as score.
+- The global-best record (`parallel-exchange/global-best.txt`) now also reports
+  `map_coverage`, the fraction of trace-map entries (traced signals) that
+  toggled at least once, and all coverages (`toggle_coverage`, `map_coverage`)
+  are reported as percentages with two digits after the decimal point
+  (e.g. `60.00%`) in the record and in log lines.
 
 - Source files consolidated: `logging.rs` and `monitor.rs` merged into
   `main.rs`, `global_best.rs` merged into `parallel.rs`, and `simulation.rs`

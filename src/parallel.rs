@@ -147,7 +147,12 @@ pub fn update_global_best(
         writeln!(
             temp,
             "toggle_coverage={}",
-            evaluation.toggle_coverage().unwrap_or(0.0)
+            crate::evaluation::format_percentage(evaluation.toggle_coverage().unwrap_or(0.0))
+        )?;
+        writeln!(
+            temp,
+            "map_coverage={}",
+            crate::evaluation::format_percentage(evaluation.map_coverage().unwrap_or(0.0))
         )?;
         writeln!(temp, "worker={worker_name}")?;
         writeln!(
@@ -162,8 +167,10 @@ pub fn update_global_best(
         )?;
         temp.persist(&record).map_err(|e| e.error)?;
         eprintln!(
-            "New global best toggle activity: {} changes/s ({worker_name})",
-            evaluation.score()
+            "New global best toggle activity: {} changes/s (coverage {}, map {}) ({worker_name})",
+            evaluation.score(),
+            crate::evaluation::format_percentage(evaluation.toggle_coverage().unwrap_or(0.0)),
+            crate::evaluation::format_percentage(evaluation.map_coverage().unwrap_or(0.0))
         );
     }
     drop(lock);
@@ -253,7 +260,8 @@ mod tests {
         }
         let text = fs::read_to_string(root.join("global-best.txt")).unwrap();
         assert!(text.contains("toggle_activity=0.50000002\n"), "{text}");
-        assert!(text.contains("toggle_coverage=0.9\n"), "{text}");
+        assert!(text.contains("toggle_coverage=90.00%\n"), "{text}");
+        assert!(text.contains("map_coverage=100.00%\n"), "{text}");
         assert!(text.contains("worker=worker-0001\n"), "{text}");
         let assembly = text
             .lines()

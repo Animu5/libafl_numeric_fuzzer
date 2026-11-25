@@ -25,7 +25,13 @@ pub struct Evaluation {
     metric: Metric,
     score: f64,
     toggle_coverage: Option<f64>,
+    map_coverage: Option<f64>,
     map: Option<Rc<Vec<u8>>>,
+}
+
+/// Formats a fraction as a percentage with two digits after the decimal point.
+pub fn format_percentage(fraction: f64) -> String {
+    format!("{:.2}%", fraction * 100.0)
 }
 
 impl Evaluation {
@@ -40,6 +46,7 @@ impl Evaluation {
             metric: Metric::PowerDelta,
             score: watts,
             toggle_coverage: None,
+            map_coverage: None,
             map: None,
         })
     }
@@ -59,10 +66,16 @@ impl Evaluation {
                 "toggle coverage must be finite and between 0 and 1, got {coverage}"
             )));
         }
+        let map_coverage = if map.is_empty() {
+            0.0
+        } else {
+            map.iter().filter(|&&b| b > 0).count() as f64 / map.len() as f64
+        };
         Ok(Self {
             metric: Metric::ToggleActivity,
             score: activity,
             toggle_coverage: Some(coverage),
+            map_coverage: Some(map_coverage),
             map: Some(Rc::new(map)),
         })
     }
@@ -78,6 +91,12 @@ impl Evaluation {
     /// Fraction of selected bit-vector bits that changed at least once (simulation only).
     pub fn toggle_coverage(&self) -> Option<f64> {
         self.toggle_coverage
+    }
+
+    /// Fraction of trace-map entries (traced signals) that toggled at least
+    /// once (simulation only).
+    pub fn map_coverage(&self) -> Option<f64> {
+        self.map_coverage
     }
 
     /// Trace map of the last run: one saturating toggle count per traced signal
@@ -120,14 +139,27 @@ mod tests {
         assert_eq!(power.metric(), Metric::PowerDelta);
         assert_eq!(power.score(), -0.5);
         assert_eq!(power.toggle_coverage(), None);
+        assert_eq!(power.map_coverage(), None);
         assert!(power.trace_map().is_none());
         for coverage in [0.0, 1.0] {
             let result = Evaluation::toggle_metrics(1200.0, coverage, vec![0, 3, 255]).unwrap();
             assert_eq!(result.metric(), Metric::ToggleActivity);
             assert_eq!(result.score(), 1200.0);
             assert_eq!(result.toggle_coverage(), Some(coverage));
+            // 2 of 3 map entries are non-zero.
+            assert_eq!(result.map_coverage(), Some(2.0 / 3.0));
             assert_eq!(result.trace_map(), Some(&[0, 3, 255][..]));
         }
+        assert_eq!(Evaluation::toggle_metrics(0.0, 0.0, vec![]).unwrap().map_coverage(), Some(0.0));
+    }
+
+    #[test]
+    fn percentages_have_two_decimal_digits() {
+        assert_eq!(format_percentage(0.6), "60.00%");
+        assert_eq!(format_percentage(1.0), "100.00%");
+        assert_eq!(format_percentage(0.0), "0.00%");
+        assert_eq!(format_percentage(2.0 / 3.0), "66.67%");
+        assert_eq!(format_percentage(0.00004), "0.00%");
     }
 
     #[test]

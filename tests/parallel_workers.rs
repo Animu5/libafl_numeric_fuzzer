@@ -139,8 +139,12 @@ esac"#,
     // Wait for all artifacts, not just the global best: worker-0000 may lag
     // behind worker-0001, whose high-activity trace becomes the global best.
     let ready = || {
-        fs::read_to_string(&global)
-            .is_ok_and(|s| s.starts_with("toggle_activity=") && s.contains("worker=worker-0001\n"))
+        fs::read_to_string(&global).is_ok_and(|s| {
+            s.starts_with("toggle_activity=")
+                && s.contains("toggle_coverage=")
+                && s.contains("map_coverage=")
+                && s.contains("worker=worker-0001\n")
+        })
             && workspace.join("worker-0000/build/snippet.elf").is_file()
             && workspace.join("worker-0001/build/snippet.elf").is_file()
             && solutions.join("worker-0000/best.S").is_file()

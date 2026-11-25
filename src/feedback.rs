@@ -171,9 +171,14 @@ impl<EM, I, OT, S> Feedback<EM, I, OT, S> for NumericFeedback {
                         }
                         Metric::ToggleActivity => {
                             tracing::info!(
-                                "New best toggle activity: {} changes/s (coverage {})",
+                                "New best toggle activity: {} changes/s (coverage {}, map {})",
                                 self.best,
-                                evaluation.toggle_coverage().unwrap_or(0.0)
+                                crate::evaluation::format_percentage(
+                                    evaluation.toggle_coverage().unwrap_or(0.0)
+                                ),
+                                crate::evaluation::format_percentage(
+                                    evaluation.map_coverage().unwrap_or(0.0)
+                                )
                             )
                         }
                     }

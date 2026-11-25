@@ -45,9 +45,10 @@ impl Harness {
                         tracing::info!("Current measurement: {} W.", result.score())
                     }
                     Metric::ToggleActivity => tracing::info!(
-                        "Current toggle activity: {} changes/s; coverage: {}; map slots: {}.",
+                        "Current toggle activity: {} changes/s; coverage: {}; map coverage: {} ({} slots).",
                         result.score(),
-                        result.toggle_coverage().unwrap_or(0.0),
+                        crate::evaluation::format_percentage(result.toggle_coverage().unwrap_or(0.0)),
+                        crate::evaluation::format_percentage(result.map_coverage().unwrap_or(0.0)),
                         result.trace_map().map_or(0, <[u8]>::len)
                     ),
                 }

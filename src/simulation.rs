@@ -282,10 +282,11 @@ impl SimulationBackend {
         let evaluation =
             Evaluation::toggle_metrics(metrics.activity(), metrics.coverage(), metrics.trace_map())?;
         tracing::debug!(
-            "VCD analysis: toggles={} activity={}/s coverage={} map_slots={}",
+            "VCD analysis: toggles={} activity={}/s coverage={} map coverage={} map_slots={}",
             metrics.total_toggles,
             evaluation.score(),
-            evaluation.toggle_coverage().unwrap_or(0.0),
+            crate::evaluation::format_percentage(evaluation.toggle_coverage().unwrap_or(0.0)),
+            crate::evaluation::format_percentage(evaluation.map_coverage().unwrap_or(0.0)),
             evaluation.trace_map().map_or(0, <[u8]>::len)
         );
         Ok(evaluation)
