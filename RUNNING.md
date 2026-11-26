@@ -57,7 +57,7 @@ Set these in the config file or on the command line:
 
 * `assembly_environment`: directory containing the Makefile. For each input the fuzzer writes `src/snippet.S` there (the `src` directory must exist), runs `make -B` and loads `snippet.elf`;
 * `grammar`: Nautilus JSON grammar the inputs are generated from (default `grammars/riscv64g.json`, converted from `grammars/RISCV64G.g4` by `tools/g4_to_nautilus.py`);
-* `grammar_depth`: Nautilus tree depth — must exceed the grammar's minimum derivation size (~350 for the bundled grammar) and caps the generated program size (default 512);
+* `grammar_depth`: Nautilus tree depth — must exceed the grammar's minimum derivation size (~350 for the bundled grammar) and caps the generated program size (default 16384; the depth is a budget shared by all sibling nonterminals, so it must be much larger than the ~350 minimum);
 * `grammar_seeds`: number of grammar-generated inputs in the initial corpus (default 64);
 * `riscv_toolpath`: RISC-V toolchain directory, passed to `make` as the environment variable `RISCV`.
 

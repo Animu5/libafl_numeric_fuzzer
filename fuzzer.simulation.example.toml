@@ -7,8 +7,8 @@ solutions_path = "./simulation-solutions"
 # Grammar the inputs are generated from (Nautilus JSON; default: grammars/riscv64g.json,
 # converted from grammars/RISCV64G.g4 by tools/g4_to_nautilus.py).
 # grammar = "grammars/riscv64g.json"
-# Tree depth: must exceed the grammar's minimum derivation size; caps program size (default: 512)
-# grammar_depth = 512
+# Tree depth: a budget shared by all sibling nonterminals; must be much larger than the ~350-leaf minimum; caps program size (default: 16384)
+# grammar_depth = 16384
 # Number of grammar-generated inputs in the initial corpus (default: 64)
 # grammar_seeds = 64
 # The ISA gate is built in (src/isagate/): every generated program is validated

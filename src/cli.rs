@@ -11,9 +11,12 @@ use std::path::{Path, PathBuf};
 
 /// Default for `--grammar-depth`. Nautilus needs the tree depth to exceed the
 /// bundled grammar's minimum derivation size (~350 rule applications, mostly the
-/// 32 register inits and 32 float constants); 512 leaves headroom and still caps
-/// generated programs at a few dozen statements.
-pub const DEFAULT_GRAMMAR_DEPTH: usize = 512;
+/// 32 register inits and 32 float constants). The depth is a *budget* shared by
+/// all sibling nonterminals of a rule, so it must be much larger than the minimum:
+/// the statement-list repetition `(statements)+` is one of ~66 siblings of the
+/// start rule and only gets a ~1/66 share, which at 512 left room for a single
+/// body statement. 16384 gives the body room for dozens of statements.
+pub const DEFAULT_GRAMMAR_DEPTH: usize = 16384;
 
 /// Default for `--grammar-seeds`: inputs generated from the grammar as the initial corpus.
 pub const DEFAULT_GRAMMAR_SEEDS: usize = 64;
@@ -67,7 +70,7 @@ pub struct Args {
     #[arg(long)]
     grammar: Option<PathBuf>,
 
-    /// Nautilus grammar tree depth: must exceed the grammar's minimum derivation size and caps the generated program size (default: 512)
+    /// Nautilus grammar tree depth: must exceed the grammar's minimum derivation size and caps the generated program size (default: 16384)
     #[arg(long)]
     grammar_depth: Option<usize>,
 

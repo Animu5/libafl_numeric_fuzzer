@@ -62,6 +62,16 @@ Notable changes are summarized here. Earlier history is available in Git.
   `lw x2,(x22)`-style line ("bad offset"), and memory instructions never
   reached the target. The gate also accepts a missing offset as 0 now, so
   spec-valid assembly is no longer rejected.
+- Generated programs now have multi-statement bodies instead of
+  single-instruction loops. Two causes fixed: (1) the g4->Nautilus converter
+  now emits the recursive alternative of `(...)*`/`(...)+` groups
+  `RECURSION_BIAS` (8) times, so Nautilus recurses with 8/9 probability per
+  level instead of stopping at 50%; (2) the default `--grammar-depth` rises
+  from 512 to 16384 — Nautilus splits the depth budget fairly among a rule's
+  sibling nonterminals, and the statement list is one of ~66 siblings of the
+  start rule, so at 512 it got a budget of ~8 rule applications (one
+  statement). Measured on 16 seeded generations: ~9 body statements on
+  average (was ~1.25).
 
 ## 0.10.1
 

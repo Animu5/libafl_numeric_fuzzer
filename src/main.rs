@@ -675,4 +675,47 @@ mod tests {
         assert!(text.contains(".section"), "missing data section:\n{text}");
         assert!(text.contains("li x1,"), "missing register init:\n{text}");
     }
+
+    /// The converter biases (...)+ repetitions toward recursing (RECURSION_BIAS
+    /// in tools/g4_to_nautilus.py), so generated programs must have
+    /// multi-statement bodies, not single-instruction loops.
+    #[test]
+    fn bundled_grammar_generates_multi_statement_bodies() {
+        use libafl::{
+            generators::nautilus::{NautilusContext, NautilusGenerator},
+            state::{HasRand, NopState},
+        };
+        use libafl_bolts::rands::StdRand;
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/grammars/riscv64g.json");
+        let ctx = NautilusContext::from_file(crate::cli::DEFAULT_GRAMMAR_DEPTH, path)
+            .expect("bundled grammar must load at the default depth");
+        let mut total_statements = 0usize;
+        let seeds = 16usize;
+        for seed in 0..seeds {
+            let mut state = NopState::<NautilusInput>::new();
+            *state.rand_mut() = StdRand::with_seed(seed as u64);
+            let mut generator = NautilusGenerator::new(&ctx);
+            let input = generator.generate(&mut state).expect("generation must work");
+            let mut bytes = Vec::new();
+            input.unparse(&ctx, &mut bytes);
+            let text = String::from_utf8(bytes).expect("grammar output must be UTF-8");
+            // The body is what sits between the _start: label and the end loop.
+            let body = text
+                .split("_start:\n")
+                .nth(1)
+                .and_then(|rest| rest.split("j _start").next())
+                .expect("program must have a body");
+            let statements = body
+                .lines()
+                .filter(|line| !line.is_empty() && !line.ends_with(':'))
+                .count();
+            total_statements += statements;
+        }
+        // With an 8/9 recursion bias the mean body is ~9 statements; 16 seeds
+        // must average well above the unbiased ~2.
+        assert!(
+            total_statements >= 4 * seeds,
+            "bodies too small: {total_statements} statements over {seeds} seeds"
+        );
+    }
 }

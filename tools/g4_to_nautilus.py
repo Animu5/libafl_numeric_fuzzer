@@ -32,6 +32,11 @@ text generation they are replaced by:
 - ``run_random_float``               -> ``{HEX64}\\n``  (generated .quad bits)
 - all other ``run_*``                -> empty (the statement text is complete)
 
+Repetitions ((...)* / (...)+) become a base rule plus a recursive rule, and the
+recursive rule is emitted RECURSION_BIAS times: Nautilus chooses rule
+alternatives uniformly, so without the bias generated programs would mostly be
+single-instruction loops.
+
 Usage:
     python3 tools/g4_to_nautilus.py grammars/RISCV64G.g4 grammars/riscv64g.json
 
@@ -257,6 +262,10 @@ def nautilus_escape(text):
     return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
 
 
+# How many times the recursive alternative of a (...)* / (...)+ group is
+# emitted, biasing Nautilus toward longer repetitions (see module docstring).
+RECURSION_BIAS = 8
+
 # Replacements for the run_* emulator-hook rules (see module docstring).
 RUN_RULE_REPLACEMENTS = {
     "run_int_imm2": [[("ref", "INT_IMM"), ("lit", "\n")]],
@@ -341,12 +350,18 @@ class Converter:
         if group.suffix == "?":
             self.emit_queued(opt, "")
             self.emit_queued(opt, "{" + inner + "}")
-        elif group.suffix == "*":
-            self.emit_queued(opt, "")
-            self.emit_queued(opt, "{" + inner + "}{" + opt + "}")
-        elif group.suffix == "+":
-            self.emit_queued(opt, "{" + inner + "}")
-            self.emit_queued(opt, "{" + inner + "}{" + opt + "}")
+        elif group.suffix in ("*", "+"):
+            if group.suffix == "*":
+                self.emit_queued(opt, "")
+            else:
+                self.emit_queued(opt, "{" + inner + "}")
+            # Bias toward recursing: Nautilus picks rule alternatives uniformly,
+            # so a plain base+recursive pair stops after ~2 iterations on
+            # average and generated programs end up as single-instruction loops.
+            # Emitting the recursive alternative several times makes bodies
+            # longer on average while staying variable.
+            for _ in range(RECURSION_BIAS):
+                self.emit_queued(opt, "{" + inner + "}{" + opt + "}")
         return "{" + opt + "}"
 
     def convert(self, rules):

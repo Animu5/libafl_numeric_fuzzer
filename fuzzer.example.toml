@@ -7,7 +7,7 @@ scope_timeout_ms = 20000
 
 # Grammar-based inputs (Nautilus JSON; inputs are generated, not decoded):
 # grammar = "grammars/riscv64g.json"  # default; see tools/g4_to_nautilus.py
-# grammar_depth = 512  # default; must exceed the grammar's minimum derivation size
+# grammar_depth = 16384  # default; the depth budget is shared by all sibling nonterminals, so it must be much larger than the ~350-leaf minimum
 # grammar_seeds = 64  # default; size of the generated initial corpus
 # The ISA gate is built in (src/isagate/, a Rust port of atnwalk/cmd/isagate from
 # the asltgen-afl-proxy project): every generated program is validated and fixed
