@@ -128,9 +128,11 @@ impl SnippetBuilder {
         )
     }
 
-    /// Writes `source` as `src/snippet.S`, builds the snippet, and returns the path
-    /// to the fresh ELF. The source is a complete assembly program (the grammar
-    /// emits `_start:` and the data section itself), so no `init.inc` is included.
+    /// Writes `source` verbatim as `src/snippet.S`, builds the snippet, and returns
+    /// the path to the fresh ELF. In grammar mode the caller passes a complete
+    /// assembly program that already starts with the `#include "init.inc"` line
+    /// (the machine init; the linker enters at `_init`, which falls through into
+    /// the snippet), so the builder never adds anything itself.
     pub fn build_from_source(&mut self, source: &str) -> Result<PathBuf, BuildError> {
         let elf = self.assembly_environment.join("snippet.elf");
         let src_dir = self.assembly_environment.join("src");
@@ -264,7 +266,8 @@ mod tests {
     fn builds_source_verbatim_without_include() {
         let (dir, mut b) = env("snippet.elf: src/snippet.S\n\tcp $< $@\n");
         let elf = b.build_from_source("_start:\n\tnop\n").unwrap();
-        // The grammar output is a complete program; no init.inc is prepended.
+        // The builder writes the source verbatim; the init.inc include is
+        // prepended by the caller (the harness), not here.
         assert_eq!(
             std::fs::read_to_string(elf).unwrap(),
             "_start:\n\tnop\n"

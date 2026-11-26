@@ -12,6 +12,14 @@ use crate::{
 use libafl::{executors::ExitKind, generators::nautilus::NautilusContext, inputs::NautilusInput};
 use std::rc::Rc;
 
+/// Prepended to every generated snippet. The assembly environment's `init.inc`
+/// provides the machine init: the linker script enters at `_init`, which sets
+/// `mtvec`, PMP, SATP, delegates traps, enables the FPU and loads `gp`, then
+/// falls through into the snippet body. Without it, float instructions trap
+/// (FS is off) and arbitrary memory accesses trap (no PMP/SATP setup). The
+/// original asltgen-afl-proxy `SnippetCompiler` wrote the same include line.
+const SNIPPET_INIT_INCLUDE: &str = "#include \"init.inc\"\n\n";
+
 /// Builds each input and sends it to the selected evaluation backend.
 pub struct Harness {
     pub builder: SnippetBuilder,
@@ -50,9 +58,14 @@ impl Harness {
                 return ExitKind::Ok;
             }
         };
-        let bytes = fixed.as_bytes();
+        // Prepend the machine-init include after the gate (the gate only ever
+        // sees the bare program), so the written src/snippet.S, the snippet
+        // archive, the saved solution assemblies and the persisted input bytes
+        // all contain the complete, buildable source.
+        let source = format!("{SNIPPET_INIT_INCLUDE}{fixed}");
+        let bytes = source.as_bytes();
         let head = &bytes[..bytes.len().min(16)];
-        let elf = match self.builder.build_from_source(&fixed) {
+        let elf = match self.builder.build_from_source(&source) {
             Ok(elf) => elf,
             Err(e) => {
                 tracing::warn!(
@@ -80,8 +93,9 @@ impl Harness {
                 }
                 *self.shared.assembly.borrow_mut() =
                     self.builder.last_assembly().map(str::to_string);
-                // The persisted "input bytes" are the fixed assembly text, so the
-                // global best input file stays human-readable in grammar mode.
+                // The persisted "input bytes" are the complete assembly text
+                // (include line plus gate-fixed program), so the global best
+                // input file stays human-readable in grammar mode.
                 self.shared.input.borrow_mut().extend_from_slice(bytes);
                 *self.shared.evaluation.borrow_mut() = Some(result);
             }
@@ -180,8 +194,12 @@ mod tests {
             2.0
         );
         assert!(shared.assembly.borrow().as_ref().unwrap().contains("mv"));
-        // The persisted input bytes are the gate-fixed assembly (with labels).
-        assert_eq!(shared.input.borrow().as_slice(), b".Lbr0:\nmv x1,x2\n");
+        // The persisted input bytes are the complete source: init.inc include
+        // plus the gate-fixed assembly (with labels).
+        assert_eq!(
+            shared.input.borrow().as_slice(),
+            b"#include \"init.inc\"\n\n.Lbr0:\nmv x1,x2\n"
+        );
         harness.run(&gen_input(&grammar, 2));
         assert!(shared.evaluation.borrow().is_none());
         assert!(shared.assembly.borrow().is_none());

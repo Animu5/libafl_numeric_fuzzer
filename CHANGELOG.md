@@ -22,9 +22,10 @@ Notable changes are summarized here. Earlier history is available in Git.
   generated from the grammar (`--grammar-seeds`, default 64; `--seed` and
   `--atndecode-path` are removed), mutation uses the Nautilus random and
   recursion mutators instead of havoc, and the harness unparses each tree
-  into a complete assembly program written as `src/snippet.S` (no `init.inc`
-  include). `--grammar-depth` (default 512) must exceed the grammar's minimum
-  derivation size (~350 for the bundled grammar).
+  into a complete assembly program that is written as `src/snippet.S` with a
+  prepended `#include "init.inc"` line (see below). `--grammar-depth`
+  (default 512) must exceed the grammar's minimum derivation size (~350 for
+  the bundled grammar).
 - ISA gate is now built in: every grammar-generated program is validated and
   fixed in-process by the new `src/isagate/` module before it is built —
   `machine.rs` is a Rust port of the Go `RISCV64GMachine` ISA model
@@ -40,6 +41,16 @@ Notable changes are summarized here. Earlier history is available in Git.
   global best. The external `--isa-gate`/`--isa-gate-timeout-ms` options and
   the stdin/stdout gate subprocess (`supervisor::run_process_with_stdin`) are
   removed, so no gate binary needs to be built or shipped.
+- Generated snippets again start with `#include "init.inc"`: the harness
+  prepends the include (after the ISA gate, exactly like the original
+  asltgen-afl-proxy `SnippetCompiler`) to every gate-fixed program before it
+  is written as `src/snippet.S`. The include is required — the linker script
+  enters at `_init`, which sets `mtvec`, PMP and SATP, delegates traps,
+  enables the FPU and loads `gp`, then falls through into the snippet body;
+  without it, float instructions trap (FS off) and arbitrary memory accesses
+  trap. The include line is part of everything persisted downstream (the
+  `NNNNNN.S` snippet archive, the `<name>.S`/`best.S` solution assemblies and
+  the input bytes), so saved files are complete, buildable programs.
 - Branch labels: the ISA gate now emits a `.Lbr{j}:` label before every
   statement and rewrites each branch operand to `.Lbr{imm mod n}` (`imm` = the
   branch immediate carried by the Nautilus parse tree, `n` = statement count),
