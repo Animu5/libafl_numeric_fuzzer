@@ -31,7 +31,9 @@ For the default hardware backend it then:
 The simulation backend instead runs the ELF in the supplied simulator and
 analyzes its VCD in-process: an input is interesting when its trace map covers
 a signal (or toggle count) never seen before; the toggle activity per simulated
-second is the secondary metric used for best tracking. See
+cycle (rising clock edges counted in the VCD) times `--target-clock-hz`
+(default 50 MHz) is the secondary score used for best tracking, i.e. the
+expected changes per wall-clock second on the real chip. See
 `fuzzer.simulation.example.toml` and `RUNNING.md` for configuration.
 Parallel simulation workers run on a single node via LibAFL's `Launcher` with LLMP
 shared-memory IPC: workers are forked and pinned to cores, exchange interesting
@@ -64,11 +66,12 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
 
 ## Current Limitations
 
-The simulation score is toggle activity (changes per simulated second), not
-watts. The integrated analyzer may report zero activity when no counted signal
-changed or no usable change time exists, so zero alone does not establish that
-the intended signals were measured; the trace map tells apart "no signal
-toggled" from "the same signals toggled again".
+The simulation score is toggle activity (changes per simulated cycle times
+the target clock frequency), not watts. The integrated analyzer may report zero
+activity when no counted signal changed, the trace carries no timestamps, or
+the clock never rose, so zero alone does not establish that the intended
+signals were measured; the trace map tells apart "no signal toggled" from
+"the same signals toggled again".
 
 ## Attribution
 

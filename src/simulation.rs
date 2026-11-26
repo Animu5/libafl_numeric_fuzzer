@@ -119,6 +119,9 @@ pub struct SimulationConfig {
     /// traces are not written to the (often size-limited) system temp directory.
     pub vcd_dir: Option<PathBuf>,
     pub simulator_timeout: Duration,
+    /// Target clock frequency in Hz: the per-cycle toggle activity is scaled
+    /// by this to get the score in changes per wall-clock second on the real chip.
+    pub target_clock_hz: u64,
 }
 
 /// The simulation backend (see the module docs for the pipeline).
@@ -173,6 +176,9 @@ impl SimulationBackend {
         }
         if config.simulator_timeout.is_zero() {
             return Err(EvaluationError::Fatal("Simulator timeout must be nonzero".into()));
+        }
+        if config.target_clock_hz == 0 {
+            return Err(EvaluationError::Fatal("Target clock frequency must be nonzero".into()));
         }
         if !config.simulator_args.iter().any(|a| contains(a, b"{elf}"))
             || !config.simulator_args.iter().any(|a| contains(a, b"{vcd}"))
@@ -299,12 +305,23 @@ impl SimulationBackend {
                 EvaluationError::Measurement(format!("VCD analysis of {} failed: {e}", vcd.display()))
             },
         )?;
+        // The score is the toggle activity per simulated cycle (rising clock
+        // edge in the VCD) scaled by the target clock frequency, i.e. the
+        // expected changes per wall-clock second on the real chip. Using the
+        // per-cycle rate makes the score independent of the simulator's own
+        // clock, which can differ from the target's.
+        let score = metrics.activity_per_cycle() * self.config.target_clock_hz as f64;
         let evaluation =
-            Evaluation::toggle_metrics(metrics.activity(), metrics.coverage(), metrics.trace_map())?;
+            Evaluation::toggle_metrics(score, metrics.coverage(), metrics.trace_map())?;
         tracing::debug!(
-            "VCD analysis: toggles={} activity={}/s coverage={} map coverage={} map_slots={}",
+            "VCD analysis: toggles={} cycles={} simulated={:.6}s per-cycle={}/cycle sim-rate={}/s score={}/s at {}Hz coverage={} map coverage={} map_slots={}",
             metrics.total_toggles,
+            metrics.cycles(),
+            metrics.simulated_seconds(),
+            metrics.activity_per_cycle(),
+            metrics.activity(),
             evaluation.score(),
+            self.config.target_clock_hz,
             crate::evaluation::format_percentage(evaluation.toggle_coverage().unwrap_or(0.0)),
             crate::evaluation::format_percentage(evaluation.map_coverage().unwrap_or(0.0)),
             evaluation.trace_map().map_or(0, <[u8]>::len)
@@ -473,31 +490,44 @@ mod tests {
     static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Minimal but real VCD: signal `value` toggles twice (0→1→0), the 4-bit vector
-    /// `nibble` changes once from b0000 to b0101 (2 of its 4 bits). Last change at #20
-    /// with a 1ns timescale, so activity = 3 toggles / 20ns = 1.5e8 toggles/s.
-    /// Bit-level coverage counts all 5 bits (`value` is a 1-bit vector), of which 3
-    /// changed: 0.6.
+    /// `nibble` changes once from b0000 to b0101 (2 of its 4 bits), and the 1-bit
+    /// `clock` rises twice (#10, #20) and falls at #15 and #25, so 2 cycles were
+    /// simulated. The last timestamp is #25 while the last counted change is at
+    /// #20. With a 1ns timescale: activity = 3 toggles / 25ns = 1.2e8 toggles/s,
+    /// activity per cycle = 3/2 = 1.5, and the score at the default 50 MHz target
+    /// clock = 1.5 * 50e6 = 7.5e7 changes/s. Bit-level coverage counts all 5 bits
+    /// (`value` is a 1-bit vector), of which 3 changed: 0.6.
     const FIXTURE_VCD: &str = "\
 $timescale 1ns $end
 $scope module TOP $end
 $scope module dut $end
 $var wire 1 ! value $end
 $var wire 4 \" nibble $end
+$var wire 1 & clock $end
 $upscope $end
 $upscope $end
 $enddefinitions $end
 #0
 0!
 b0000 \"
+0&
 #10
 1!
 b0101 \"
+1&
+#15
+0&
 #20
 0!
+1&
+#25
+0&
 ";
 
-    const FIXTURE_ACTIVITY: f64 = 150_000_000.0;
+    /// Score = activity per cycle (3 toggles / 2 cycles = 1.5) * 50 MHz.
+    const FIXTURE_ACTIVITY: f64 = 75_000_000.0;
     const FIXTURE_COVERAGE: f64 = 0.6;
+    const FIXTURE_TARGET_CLOCK_HZ: u64 = 50_000_000;
 
     struct Fixture {
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -543,6 +573,7 @@ b0101 \"
                 exclude_signal_file: None,
                 vcd_dir: None,
                 simulator_timeout: Duration::from_secs(2),
+                target_clock_hz: FIXTURE_TARGET_CLOCK_HZ,
             }
         }
 
@@ -558,8 +589,9 @@ printf '%s' "${TMPDIR:-}" > tmpdir
             );
         }
 
-        /// Asserts the fixture's metrics: activity 1.5e8, coverage 0.5, and a two-entry
-        /// trace map with saturating per-signal toggle counts {1, 2}.
+        /// Asserts the fixture's metrics: score 7.5e7 (1.5 toggles/cycle at 50 MHz),
+        /// coverage 0.6, and a two-entry trace map with saturating per-signal
+        /// toggle counts {1, 2}.
         fn assert_fixture_metrics(result: &Evaluation) {
             assert_eq!(result.metric(), Metric::ToggleActivity);
             assert_eq!(result.score(), FIXTURE_ACTIVITY);
@@ -722,10 +754,11 @@ cp fixture.vcd "$vcd"
             .unwrap()
             .evaluate(&fixture.elf)
             .unwrap();
-        // With `nibble` excluded only `value` counts: 2 toggles, and its single bit
+        // With `nibble` excluded only `value` counts: 2 toggles over 2 cycles =
+        // 1 toggle/cycle, so the score is 1 * 50 MHz = 5e7; its single bit
         // changed, so coverage is 1.0.
         assert_eq!(result.metric(), Metric::ToggleActivity);
-        assert_eq!(result.score(), 100_000_000.0);
+        assert_eq!(result.score(), 50_000_000.0);
         assert_eq!(result.toggle_coverage(), Some(1.0));
         let map = result.trace_map().unwrap();
         assert_eq!(
@@ -752,6 +785,12 @@ cp fixture.vcd "$vcd"
         ));
         let mut config = fixture.config();
         config.simulator_timeout = Duration::ZERO;
+        assert!(matches!(
+            SimulationBackend::new(config),
+            Err(EvaluationError::Fatal(_))
+        ));
+        let mut config = fixture.config();
+        config.target_clock_hz = 0;
         assert!(matches!(
             SimulationBackend::new(config),
             Err(EvaluationError::Fatal(_))

@@ -511,6 +511,7 @@ where
             exclude_signal_file,
             vcd_dir,
             simulator_timeout_ms,
+            target_clock_hz,
         } => {
             let settings = simulation::SimulationConfig {
                 simulator: simulator_path,
@@ -520,6 +521,7 @@ where
                 exclude_signal_file,
                 vcd_dir,
                 simulator_timeout: Duration::from_millis(simulator_timeout_ms),
+                target_clock_hz,
             };
             Box::new(
                 simulation::SimulationBackend::new(settings)

@@ -32,6 +32,20 @@ Notable changes are summarized here. Earlier history is available in Git.
   in the debug log) and never built. The fixed program is what gets written,
   built, measured and persisted; the `#include "init.inc"` line is prepended
   after the gate, so the gate only ever sees the bare program.
+- True simulated time and cycle count from the VCD (backported from the
+  `grammar` branch): the toggle engine now tracks the last `#` timestamp of the
+  trace as the real simulated duration (instead of the last change of a
+  counted signal, and with no fixed time assumption) and counts the rising
+  edges of the 1-bit `clock` variable below the target scope as simulated
+  cycles — in both the fast VCD scanner and the wellen streaming fallback.
+  The simulation score (`toggle_activity`) is now toggles per cycle ×
+  `--target-clock-hz` (TOML `target_clock_hz`, default 50000000 = 50 MHz),
+  i.e. the expected changes per wall-clock second on the real chip,
+  independent of the simulator's own clock (Verilator VCDs are timestamped at
+  1 GHz). The per-second `activity()` and the new
+  `activity_per_cycle()`/`cycles()`/`simulated_seconds()` metrics are all
+  derived from these; the debug log shows toggles, cycles, simulated duration,
+  per-cycle activity and the score for every run.
 
 ## 0.10.1
 

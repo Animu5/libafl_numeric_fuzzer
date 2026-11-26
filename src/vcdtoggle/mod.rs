@@ -47,24 +47,34 @@ mod tests {
     use std::io::Write;
 
     /// A minimal VCD: `value` toggles twice, the 4-bit `nibble` changes once
-    /// (2 of 4 bits), last change at #20 with a 1ns timescale.
+    /// (2 of 4 bits), and the 1-bit `clock` rises at #10 and #20 (2 cycles) and
+    /// falls at #15 and #25. The last timestamp is #25 while the last counted
+    /// change is at #20, with a 1ns timescale.
     const VCD: &str = "\
 $timescale 1ns $end
 $scope module TOP $end
 $scope module dut $end
 $var wire 1 ! value $end
 $var wire 4 \" nibble $end
+$var wire 1 & clock $end
 $upscope $end
 $upscope $end
 $enddefinitions $end
 #0
 0!
 b0000 \"
+0&
 #10
 1!
 b0101 \"
+1&
+#15
+0&
 #20
 0!
+1&
+#25
+0&
 ";
 
     fn write_temp(content: &str) -> tempfile::NamedTempFile {
@@ -78,7 +88,16 @@ b0101 \"
         let file = write_temp(VCD);
         let metrics = analyze(file.path(), "TOP.dut", &Default::default()).unwrap();
         assert_eq!(metrics.total_toggles, 3);
-        assert_eq!(metrics.activity(), 150_000_000.0);
+        // 3 toggles over the full trace (#25 = 25ns): 1.2e8 toggles/s, and
+        // 3 toggles over 2 clock cycles: 1.5 toggles/cycle.
+        // 25 ticks at 1ns; compared with an epsilon because 10^-9 is not exact in binary.
+        assert!((metrics.simulated_seconds() - 25e-9).abs() < 1e-20);
+        assert_eq!(metrics.last_timestamp, Some(25));
+        assert_eq!(metrics.last_change_time, Some(20));
+        assert_eq!(metrics.cycles(), 2);
+        // 3 toggles / 25ns = 1.2e8/s; epsilon because 10^-9 is not exact in binary.
+        assert!((metrics.activity() - 120_000_000.0).abs() < 1e-6);
+        assert_eq!(metrics.activity_per_cycle(), 1.5);
         // `value` is a 1-bit vector: 3 of 5 bits changed.
         assert_eq!(metrics.coverage(), 0.6);
         let mut map = metrics.trace_map();
@@ -100,6 +119,10 @@ b0101 \"
         assert_eq!(fast.toggled_bits, slow.toggled_bits);
         assert_eq!(fast.total_bits, slow.total_bits);
         assert_eq!(fast.last_change_time, slow.last_change_time);
+        assert_eq!(fast.last_timestamp, slow.last_timestamp);
+        assert_eq!(fast.cycles, slow.cycles);
+        assert_eq!(fast.activity(), slow.activity());
+        assert_eq!(fast.activity_per_cycle(), slow.activity_per_cycle());
         assert_eq!(fast.trace_map(), slow.trace_map());
     }
 
