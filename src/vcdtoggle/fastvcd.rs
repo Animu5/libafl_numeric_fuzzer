@@ -26,10 +26,14 @@ pub struct SignalCounts {
     pub toggled_bits: u32,
 }
 
-/// Result of one fast scan: per-signal counts and the time of the last change.
+/// Result of one fast scan: per-signal counts, the time of the last change of a
+/// counted signal, the last timestamp seen in the file (the true end of the
+/// trace, which can be later), and the number of rising clock edges (cycles).
 pub struct FastOutcome {
     pub counts: Vec<SignalCounts>,
     pub last_change_time: Option<Time>,
+    pub last_timestamp: Option<Time>,
+    pub clock_edges: u64,
 }
 
 type FastResult<T> = Result<T, String>;
@@ -39,9 +43,16 @@ const MAX_ID_LEN: usize = 8;
 const NO_PREV: u8 = 4;
 
 /// Scans the VCD body of `path` for the selected `signals` in one mmap-based pass.
-/// Returns an error for anything outside the strict supported subset; the caller
-/// then falls back to wellen's streaming parser.
-pub fn run(path: &Path, hierarchy: &Hierarchy, signals: &[SignalRef]) -> FastResult<FastOutcome> {
+/// `clock`, when given, is an extra 1-bit signal whose rising edges are counted
+/// as cycles; it gets an extra slot appended after the signal slots and never
+/// enters the toggle counts. Returns an error for anything outside the strict
+/// supported subset; the caller then falls back to wellen's streaming parser.
+pub fn run(
+    path: &Path,
+    hierarchy: &Hierarchy,
+    signals: &[SignalRef],
+    clock: Option<SignalRef>,
+) -> FastResult<FastOutcome> {
     let file = File::open(path)
         .map_err(|err| format!("cannot open input file '{}': {err}", path.display()))?;
     // SAFETY: the file is only read; like any mmap-based reader this assumes it
@@ -51,7 +62,7 @@ pub fn run(path: &Path, hierarchy: &Hierarchy, signals: &[SignalRef]) -> FastRes
     let _ = mmap.advise(Advice::Sequential);
 
     let body_start = locate_body(&mmap).ok_or("no $enddefinitions found")?;
-    let mut scanner = Scanner::prepare(hierarchy, signals, &mmap[..body_start])?;
+    let mut scanner = Scanner::prepare(hierarchy, signals, clock, &mmap[..body_start])?;
     scanner.scan(&mmap[body_start..])?;
     Ok(scanner.finish(signals))
 }
@@ -167,15 +178,25 @@ struct Scanner {
     arena: Vec<u64>,
     index: IdIndex,
     scratch: Vec<u8>,
+    /// Time of the last change of a counted signal.
     last_time: Option<Time>,
+    /// Last `#` timestamp seen — the true end of the trace, which can be later
+    /// than `last_time` when only uncounted signals change afterwards.
+    last_timestamp: Option<Time>,
+    /// Slot of the clock signal (`None` without a clock); its rising edges
+    /// are counted as cycles in `clock_edges`.
+    clock_slot: Option<u32>,
+    clock_edges: u64,
 }
 
 impl Scanner {
     /// Matches the `$var` declarations of the header to the hierarchy and
-    /// builds the identifier lookup of the selected signals.
+    /// builds the identifier lookup of the selected signals (plus the clock,
+    /// appended as an extra slot at the end).
     fn prepare(
         hierarchy: &Hierarchy,
         signals: &[SignalRef],
+        clock: Option<SignalRef>,
         header: &[u8],
     ) -> FastResult<Self> {
         let mut declarations: Vec<(&[u8], &[u8])> = Vec::new();
@@ -216,7 +237,34 @@ impl Scanner {
             });
         }
 
-        let mut ids: Vec<(u64, u32)> = Vec::with_capacity(signals.len());
+        // The clock gets one extra 1-bit slot appended after the signal slots,
+        // so `finish`'s zip with `signals` still aligns and the clock's own
+        // toggle count is simply never reported.
+        let clock_slot = match clock {
+            Some(clock) => {
+                if slot_of.contains_key(&clock) {
+                    return Err("clock is also a selected signal".into());
+                }
+                match hierarchy.get_signal_tpe(clock) {
+                    Some(SignalEncoding::BitVector(1)) => {}
+                    _ => return Err("clock signal is not 1 bit wide".into()),
+                }
+                let slot = slots.len() as u32;
+                slot_of.insert(clock, slot);
+                slots.push(Slot {
+                    toggles: 0,
+                    off: 0,
+                    width: 1,
+                    prev: NO_PREV,
+                    init: false,
+                    changed: false,
+                });
+                Some(slot)
+            }
+            None => None,
+        };
+
+        let mut ids: Vec<(u64, u32)> = Vec::with_capacity(signals.len() + 1);
 
         let mut vars = hierarchy.all_vars();
         for (size, id) in &declarations {
@@ -246,6 +294,9 @@ impl Scanner {
             index: IdIndex::build(&ids)?,
             scratch: Vec::new(),
             last_time: None,
+            last_timestamp: None,
+            clock_slot,
+            clock_edges: 0,
         })
     }
 
@@ -274,13 +325,19 @@ impl Scanner {
                         return Err("time decreases".into());
                     }
                     time = value;
+                    // Every timestamp advances the trace end, even when no
+                    // counted signal changes at it.
+                    self.last_timestamp = Some(value);
                     pos = p + 1;
                 }
                 c @ (b'0' | b'1' | b'x' | b'X' | b'z' | b'Z') => {
                     let (key, next) = scan_id(buf, pos + 1)?;
                     let slot = self.index.get(key);
                     if slot != NO_SLOT {
-                        self.last_time = Some(time);
+                        // Clock changes count as cycles, not as counted-signal changes.
+                        if Some(slot) != self.clock_slot {
+                            self.last_time = Some(time);
+                        }
                         self.scalar(slot as usize, c)?;
                     }
                     pos = next;
@@ -297,7 +354,9 @@ impl Scanner {
                         if matches!(kind, b'r' | b'R') {
                             return Err("real value on a bit vector".into());
                         }
-                        self.last_time = Some(time);
+                        if Some(slot) != self.clock_slot {
+                            self.last_time = Some(time);
+                        }
                         self.vector(slot as usize, rest, split)?;
                     }
                     pos = next;
@@ -347,6 +406,11 @@ impl Scanner {
     #[inline(always)]
     fn bit(&mut self, slot: usize, c: u8) {
         let code = (((c | (c >> 1)) & 1) | ((c >> 5) & 2)) & 3;
+        // A rising edge of the clock (previous 0 -> now 1) is one simulated
+        // cycle; the initial value is not an edge.
+        if self.clock_slot == Some(slot as u32) && self.slots[slot].prev == 0 && code == 1 {
+            self.clock_edges += 1;
+        }
         let s = &mut self.slots[slot];
         if s.prev != NO_PREV && s.prev != code {
             s.toggles += 1;
@@ -411,6 +475,8 @@ impl Scanner {
     }
 
     fn finish(self, signals: &[SignalRef]) -> FastOutcome {
+        // The clock slot (if any) sits after all signal slots, so this zip
+        // still pairs each signal with its own slot and drops the clock slot.
         let counts = self
             .slots
             .iter()
@@ -436,6 +502,8 @@ impl Scanner {
         FastOutcome {
             counts,
             last_change_time: self.last_time,
+            last_timestamp: self.last_timestamp,
+            clock_edges: self.clock_edges,
         }
     }
 }

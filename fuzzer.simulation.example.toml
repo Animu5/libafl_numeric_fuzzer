@@ -28,7 +28,9 @@ simulator_working_dir = "/path/to/chipyard/simulator/working-directory"
 # Per-run trace directories (numeric-fuzzer-vcd-*) are created here, or inside
 # simulator_working_dir by default; /tmp is not used because traces can be huge.
 # vcd_dir = "/path/to/large-disk/traces"
-# 10,000,000 cycles is a placeholder, not a verified one-millisecond limit.
+# 10,000,000 cycles is a placeholder limit, not a verified time budget: the
+# score is normalized per simulated cycle (rising clock edges counted in the
+# VCD), so the cycle limit does not need to correspond to any wall-clock time.
 # Add DRAMSim arguments if needed.
 # {elf} is passed both to LOADMEM and as the positional binary.
 simulator_arg = [
@@ -41,9 +43,13 @@ simulator_arg = [
 ]
 # The VCD is analyzed in-process by the integrated vcdtogglerate engine (no external
 # analyzer binary); each run yields a trace map (primary feedback) plus toggle
-# activity (secondary) and toggle coverage.
+# activity (secondary score: toggles per simulated cycle times target_clock_hz)
+# and toggle coverage.
 target_scope = "TOP.path.to.target"
 # exclude_signal_file = "/path/to/excluded-signals.txt"
+# Target clock of the real chip in Hz; the per-cycle toggle activity from the VCD
+# is scaled by this to get the score in changes per second (default: 50000000).
+# target_clock_hz = 50000000
 # 10,000,000 cycles takes minutes in Verilator, so the defaults leave room for that.
 simulator_timeout_ms = 600000
 # Must exceed the simulator timeout, plus time to build each ELF and analyze the VCD.

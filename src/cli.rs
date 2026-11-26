@@ -151,6 +151,10 @@ pub struct Args {
     #[arg(long)]
     simulator_timeout_ms: Option<u64>,
 
+    /// Target clock frequency in Hz: the VCD's per-cycle toggle activity is scaled by this to get the score (default: 50000000)
+    #[arg(long)]
+    target_clock_hz: Option<u64>,
+
     /// OpenOCD Tcl RPC address (default: 127.0.0.1:6666)
     #[arg(long)]
     openocd_addr: Option<String>,
@@ -228,6 +232,7 @@ pub enum BackendConfig {
         exclude_signal_file: Option<PathBuf>,
         vcd_dir: Option<PathBuf>,
         simulator_timeout_ms: u64,
+        target_clock_hz: u64,
     },
 }
 
@@ -328,6 +333,13 @@ impl Args {
                 if simulator_timeout_ms == 0 {
                     return Err("Simulator timeout must be nonzero".into());
                 }
+                let target_clock_hz = self
+                    .target_clock_hz
+                    .or(file.target_clock_hz)
+                    .unwrap_or(50_000_000);
+                if target_clock_hz == 0 {
+                    return Err("Target clock frequency must be nonzero".into());
+                }
                 if exec_timeout_ms <= simulator_timeout_ms {
                     return Err("--exec-timeout-ms must exceed the simulator timeout, plus build time".into());
                 }
@@ -359,6 +371,7 @@ impl Args {
                     exclude_signal_file: self.exclude_signal_file.or(file.exclude_signal_file),
                     vcd_dir: self.vcd_dir.or(file.vcd_dir),
                     simulator_timeout_ms,
+                    target_clock_hz,
                 }
             }
         };
@@ -607,10 +620,62 @@ mod tests {
             BackendConfig::Simulation {
                 simulator_args,
                 target_scope,
+                target_clock_hz,
                 ..
             } => {
                 assert_eq!(simulator_args, ["{elf}", "--trace={vcd}"]);
                 assert_eq!(target_scope, "TOP.other");
+                // Not given anywhere: the 50 MHz default applies.
+                assert_eq!(target_clock_hz, 50_000_000);
+            }
+            _ => panic!("expected simulation"),
+        }
+    }
+
+    #[test]
+    fn target_clock_hz_comes_from_file_and_cli_overrides() {
+        let file = || {
+            toml::from_str::<Args>(
+                r#"
+            target_clock_hz = 100_000_000
+        "#,
+            )
+            .unwrap()
+        };
+        // File value is used when the CLI does not set it.
+        let config = simulation().merge(file()).unwrap();
+        match config.backend {
+            BackendConfig::Simulation { target_clock_hz, .. } => {
+                assert_eq!(target_clock_hz, 100_000_000);
+            }
+            _ => panic!("expected simulation"),
+        }
+        // CLI overrides the file.
+        let cli = Args::try_parse_from([
+            "fuzzer",
+            "--backend",
+            "simulation",
+            "--simulator-path",
+            "sim",
+            "--simulator-arg={elf}",
+            "--simulator-arg={vcd}",
+            "--target-scope",
+            "TOP.dut",
+            "--target-clock-hz",
+            "25000000",
+        ])
+        .unwrap();
+        let config = Args {
+            assembly_environment: Some("build".into()),
+            riscv_toolpath: Some("riscv".into()),
+            solutions_path: Some("solutions".into()),
+            ..cli
+        }
+        .merge(file())
+        .unwrap();
+        match config.backend {
+            BackendConfig::Simulation { target_clock_hz, .. } => {
+                assert_eq!(target_clock_hz, 25_000_000);
             }
             _ => panic!("expected simulation"),
         }
@@ -685,6 +750,13 @@ mod tests {
             args.merge(Args::default())
                 .unwrap_err()
                 .contains("target-scope")
+        );
+        let mut args = simulation();
+        args.target_clock_hz = Some(0);
+        assert!(
+            args.merge(Args::default())
+                .unwrap_err()
+                .contains("clock")
         );
     }
 

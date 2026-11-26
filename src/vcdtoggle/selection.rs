@@ -33,6 +33,28 @@ pub fn unique_signal_refs(
     refs
 }
 
+/// Finds the 1-bit clock variable below the target scope, for counting simulated
+/// cycles as rising clock edges: first a variable named exactly `clock`, else
+/// the first 1-bit variable whose name contains "clock" (aliases share a
+/// signal, so the first hit wins). `None` if the scope has no such variable.
+pub fn lookup_clock(hierarchy: &Hierarchy, target_scope: ScopeRef) -> Option<SignalRef> {
+    let mut fallback = None;
+    for var_ref in hierarchy[target_scope].all_vars(hierarchy) {
+        let var = &hierarchy[var_ref];
+        if !var.is_bit_vector(hierarchy) || var.length(hierarchy) != Some(1) {
+            continue;
+        }
+        let name = var.name(hierarchy);
+        if name == "clock" {
+            return Some(var.signal_ref());
+        }
+        if fallback.is_none() && name.contains("clock") {
+            fallback = Some(var.signal_ref());
+        }
+    }
+    fallback
+}
+
 /// Whether a variable is counted: clock/reset/debug/hidden-style names and `_`-prefixed
 /// names are always dropped, as are explicitly excluded full names.
 pub fn keep_signal(hierarchy: &Hierarchy, var: &Var, excluded: &Excluded) -> bool {

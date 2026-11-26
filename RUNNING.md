@@ -137,9 +137,10 @@ All options can be set in a TOML file passed with `--config` (see `fuzzer.exampl
 Select `--backend simulation` or `backend = "simulation"` in TOML; the default
 is hardware. See `fuzzer.simulation.example.toml`. The backend accepts the path to the built simulator,
 a simulator working directory, ordered simulator arguments, a target scope, an
-optional exclusion file, and the simulator timeout
+optional exclusion file, the simulator timeout
 (`--simulator-timeout-ms`, default 600000 — 10,000,000 cycles takes minutes in
-Verilator, so the default leaves room for that).
+Verilator, so the default leaves room for that), and the target clock frequency
+(`--target-clock-hz`, default 50000000 — see below).
 Relative configured paths resolve from the fuzzer's starting directory, not the
 simulator working directory. Arguments are passed directly without a shell:
 `{elf}` and `{vcd}` are replaced within each argument by absolute paths. Both
@@ -159,18 +160,28 @@ integrated `vcdtoggle` engine (`src/vcdtoggle/`, vendored from the
 `vcdtogglemeasure` project): a single pass over the trace for the kept signals
 below `--target-scope` (optionally minus `--exclude-signal-file <path>`). Each
 run produces a trace map — one saturating toggle count per traced signal — plus
-the scalar metrics: `toggle_activity` in signal-level changes per simulated
-second (using the last change of a counted signal as the time denominator),
-`toggle_coverage`, the fraction of bits of counted bit-vector variables that
-changed at least once, and `map_coverage`, the fraction of traced signals that
-toggled at least once. Coverages are reported as percentages with two digits
-after the decimal point (e.g. `60.00%`). The trace map is the primary feedback:
-an input is interesting when it raises any map entry above everything seen
-before. `toggle_activity` is the secondary score used for best tracking; both
-may be zero for an empty selection or missing timing. Keep the scope,
-exclusions and simulation window consistent between runs. Use separate
-solutions directories for hardware, simulation and changed simulation
-configurations, since their scores are not comparable.
+the scalar metrics: `toggle_activity` (the score), `toggle_coverage`, the
+fraction of bits of counted bit-vector variables that changed at least once,
+and `map_coverage`, the fraction of traced signals that toggled at least once.
+Coverages are reported as percentages with two digits after the decimal point
+(e.g. `60.00%`).
+
+The score does not assume any fixed simulated-time denominator. The engine reads
+the true end of the trace from the last `#` timestamp in the VCD and counts the
+rising edges of the 1-bit `clock` variable below the target scope as simulated
+cycles (both in the fast scanner and in the wellen fallback). `toggle_activity`
+= toggles per cycle × `--target-clock-hz` (TOML `target_clock_hz`, default
+50000000 = 50 MHz), i.e. the expected signal-level changes per wall-clock
+second on the real chip — independent of the simulator's own clock (Verilator
+VCDs, for example, are timestamped at 1 GHz, not at the target's clock). The
+debug log shows `toggles`, `cycles`, the simulated duration, the per-cycle
+activity and the resulting score for every run. The trace map is the primary
+feedback: an input is interesting when it raises any map entry above everything
+seen before. `toggle_activity` is the secondary score used for best tracking;
+both may be zero for an empty selection or a trace without a clock or
+timestamps. Keep the scope, exclusions and simulation window consistent between
+runs. Use separate solutions directories for hardware, simulation and changed
+simulation configurations, since their scores are not comparable.
 
 For Chipyard, provide `+max-cycles=<limit>`, `+vcdfile={vcd}` and, when
 using fast loading, `+loadmem={elf}` as simulator arguments, with `{elf}`

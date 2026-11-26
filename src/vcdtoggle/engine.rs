@@ -6,7 +6,7 @@
 
 use super::excludes::Excluded;
 use super::fastvcd;
-use super::selection::{keep_signal, lookup_target, unique_signal_refs};
+use super::selection::{keep_signal, lookup_clock, lookup_target, unique_signal_refs};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -36,6 +36,11 @@ pub struct ToggleMetrics {
     pub total_bits: u64,
     /// Time (in timescale ticks) of the last change of any counted signal.
     pub last_change_time: Option<Time>,
+    /// Last timestamp in the trace (in timescale ticks) — the true simulated
+    /// duration, which can be later than `last_change_time`.
+    pub last_timestamp: Option<Time>,
+    /// Rising edges of the clock signal = simulated cycles.
+    pub cycles: u64,
     pub timescale: Option<Timescale>,
     /// Toggles per signal, indexed by signal slot; the trace map is built from this.
     pub per_signal_toggles: Vec<u64>,
@@ -66,9 +71,12 @@ pub fn run(cfg: &EngineConfig) -> Result<ToggleMetrics, String> {
     let target_scope = lookup_target(waveform.hierarchy(), cfg.target_scope)?;
     let signal_refs = unique_signal_refs(waveform.hierarchy(), target_scope, cfg.excluded);
     let num_slots = num_slots(&signal_refs);
+    // The clock is looked up separately: it is never a counted signal (its name
+    // is filtered out), but its rising edges give the simulated cycle count.
+    let clock = lookup_clock(waveform.hierarchy(), target_scope);
 
     let fast = if cfg.is_vcd {
-        fastvcd::run(cfg.input_file, waveform.hierarchy(), &signal_refs)
+        fastvcd::run(cfg.input_file, waveform.hierarchy(), &signal_refs, clock)
             .inspect_err(|reason| {
                 tracing::debug!(
                     "fast VCD scanner not applicable for '{}' ({reason}); using wellen",
@@ -82,13 +90,17 @@ pub fn run(cfg: &EngineConfig) -> Result<ToggleMetrics, String> {
 
     let mut toggles = vec![0u64; num_slots];
     let mut toggled_bits = vec![0u32; num_slots];
-    let last_change_time = match fast {
+    let (last_change_time, last_timestamp, cycles) = match fast {
         Some(outcome) => {
             for c in outcome.counts {
                 toggles[c.signal.index()] = c.toggles;
                 toggled_bits[c.signal.index()] = c.toggled_bits;
             }
-            outcome.last_change_time
+            (
+                outcome.last_change_time,
+                outcome.last_timestamp,
+                outcome.clock_edges,
+            )
         }
         None => {
             let mut masks = BitMasks::new(
@@ -97,12 +109,19 @@ pub fn run(cfg: &EngineConfig) -> Result<ToggleMetrics, String> {
                 cfg.excluded,
                 num_slots,
             );
-            let (counted, last) = count_toggles_stream(&mut waveform, &signal_refs, &mut masks)?;
-            toggles = counted;
+            let streamed = count_toggles_stream(&mut waveform, &signal_refs, clock, &mut masks)?;
+            toggles = streamed.toggles;
+            // The stream included the clock, whose slot may sit beyond the
+            // counted signals; the trace map only covers the counted signals.
+            toggles.truncate(num_slots);
             for &signal in &signal_refs {
                 toggled_bits[signal.index()] = masks.toggled_bits(signal.index());
             }
-            last
+            (
+                streamed.last_change_time,
+                streamed.last_timestamp,
+                streamed.clock_edges,
+            )
         }
     };
 
@@ -118,27 +137,71 @@ pub fn run(cfg: &EngineConfig) -> Result<ToggleMetrics, String> {
         toggled_bits,
         total_bits,
         last_change_time,
+        last_timestamp,
+        cycles,
         timescale: waveform.hierarchy().timescale(),
         per_signal_toggles: toggles,
     })
 }
 
-/// Single pass over the value-change stream of the included signals.
-/// The first change of a signal carries its initial value, not a toggle;
+/// Result of the wellen streaming fallback: per-slot toggle counts plus the
+/// trace-end and cycle information, mirroring the fast scanner's outcome.
+struct StreamOutcome {
+    toggles: Vec<u64>,
+    last_change_time: Option<Time>,
+    last_timestamp: Option<Time>,
+    clock_edges: u64,
+}
+
+/// Single pass over the value-change stream of the included signals plus the
+/// clock. The first change of a signal carries its initial value, not a toggle;
 /// repeated identical values are not toggles (same semantics the
-/// wavemem encoder applies when storing signals).
+/// wavemem encoder applies when storing signals). Clock changes never count as
+/// toggles; their rising edges (0 -> 1) are counted as cycles instead, and
+/// every streamed timestamp advances `last_timestamp`.
 fn count_toggles_stream(
     waveform: &mut StreamingWaveform<BufReader<File>>,
     signal_refs: &[SignalRef],
+    clock: Option<SignalRef>,
     masks: &mut BitMasks,
-) -> Result<(Vec<u64>, Option<Time>), String> {
-    let num_signals = num_slots(signal_refs);
+) -> Result<StreamOutcome, String> {
+    // Stream the kept signals plus the clock (for edge counting); the clock's
+    // own slot may lie beyond the counted ones, the caller truncates it away.
+    let mut stream_refs: Vec<SignalRef> = signal_refs.to_vec();
+    if let Some(clock) = clock
+        && !stream_refs.contains(&clock)
+    {
+        stream_refs.push(clock);
+    }
+    let num_signals = num_slots(&stream_refs);
     let mut toggles = vec![0u64; num_signals];
     let mut previous: Vec<Option<SignalValue>> = (0..num_signals).map(|_| None).collect();
     let mut last_change_time: Option<Time> = None;
+    let mut last_timestamp: Option<Time> = None;
+    let mut clock_edges = 0u64;
+    // Previous bit of the clock (wellen's Bit: 0=zero, 1=one, 2=x, 3=z — the
+    // same codes the fast scanner computes).
+    let mut clock_prev: Option<u8> = None;
 
     waveform
-        .stream_changes(Filter::include_signals(signal_refs), |time, signal, value| {
+        .stream_changes(Filter::include_signals(&stream_refs), |time, signal, value| {
+            // Every streamed timestamp advances the trace end, even when only
+            // the (uncounted) clock changed at it.
+            if last_timestamp.is_none_or(|t| time > t) {
+                last_timestamp = Some(time);
+            }
+            if Some(signal) == clock {
+                if let SignalValueRef::BitVec(bv) = value
+                    && bv.width() == 1
+                {
+                    let code = u8::from(bv.get_bit(0));
+                    if clock_prev == Some(0) && code == 1 {
+                        clock_edges += 1;
+                    }
+                    clock_prev = Some(code);
+                }
+                return Ok::<(), String>(());
+            }
             let last = last_change_time.get_or_insert(0);
             if time > *last {
                 *last = time;
@@ -161,7 +224,12 @@ fn count_toggles_stream(
         })
         .map_err(|err| format!("Unable to stream value changes: {err:?}"))?;
 
-    Ok((toggles, last_change_time))
+    Ok(StreamOutcome {
+        toggles,
+        last_change_time,
+        last_timestamp,
+        clock_edges,
+    })
 }
 
 /// Per-signal record of which bits ever changed value, for bit-level coverage.
