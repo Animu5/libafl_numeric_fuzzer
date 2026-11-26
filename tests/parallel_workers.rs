@@ -61,6 +61,9 @@ $enddefinitions $end
 ";
 
 fn base_args(root: &Path, template: &Path, workspace: &Path, solutions: &Path) -> Vec<std::ffi::OsString> {
+    // The seed is cat'ed verbatim as the program; it must pass the ISA gate.
+    let seed = root.join("seed");
+    fs::write(&seed, b"mv x1,x2\n").unwrap();
     vec![
         "--backend".into(),
         "simulation".into(),
@@ -72,6 +75,8 @@ fn base_args(root: &Path, template: &Path, workspace: &Path, solutions: &Path) -
         template.as_os_str().to_os_string(),
         "--atndecode-path".into(),
         "/bin/cat".into(),
+        "--seed".into(),
+        seed.as_os_str().to_os_string(),
         "--riscv-toolpath".into(),
         "/opt/riscv".into(),
         "--solutions-path".into(),
@@ -209,6 +214,9 @@ cp "{}/trace.vcd" "$2"
         ),
     );
     let solutions = root.join("solutions");
+    // The seed is cat'ed verbatim as the program; it must pass the ISA gate.
+    let seed = root.join("seed");
+    fs::write(&seed, b"mv x1,x2\n").unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
         .args([
             "--backend", "simulation", "--workers", "2",
@@ -220,6 +228,8 @@ cp "{}/trace.vcd" "$2"
             "--riscv-toolpath", "/opt/riscv",
             "--solutions-path",
         ])
+        .arg("--seed")
+        .arg(&seed)
         .arg(&solutions)
         .arg("--log-file")
         .arg(root.join("fuzzer.log"))

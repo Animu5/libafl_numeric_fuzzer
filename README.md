@@ -17,8 +17,10 @@ secondary score.
 
 For every fuzz input, both backends first build an ELF:
 
-1. pipes the bitstream into `atndecode`, which produces RISC-V assembly (`<assembly-environment>/src/snippet.S`);
-2. runs `make` in the assembly environment (with `RISCV` set to `--riscv-toolpath`) to build `snippet.elf`;
+1. pipes the bitstream into `atndecode`, which produces RISC-V assembly;
+2. validates and fixes the decoded program with the built-in ISA gate (`src/isagate/`, a Rust port of `atnwalk/cmd/isagate` from the asltgen-afl-proxy project): the gate replays the program line by line on its ISA model, fixes what would crash (misaligned/out-of-map memory accesses get a clamped offset or an inserted `li` with a valid address; immediates are wrapped to their field widths), and labels every statement `.Lbr{j}:` so branches can target any statement — the branch operand becomes `.Lbr{imm mod n}`, i.e. the decoded immediate picks a forward or backward target, resolved by gas against the real (compressed-instruction) layout so targets always land on an instruction boundary; unfixable programs are rejected and skipped;
+3. writes the fixed program as `<assembly-environment>/src/snippet.S`, preceded by the required `#include "init.inc"` (machine init; the linker enters at `_init` and falls through into the snippet);
+4. runs `make` in the assembly environment (with `RISCV` set to `--riscv-toolpath`) to build `snippet.elf`;
 For the default hardware backend it then:
 
 1. resets the target through OpenOCD and loads the ELF;
@@ -50,7 +52,9 @@ The corpus starts with a seed (`--seed` file or directory of files, default 16 z
   hardware execution and the simulation backend;
 * `src/vcdtoggle/`: integrated VCD toggle analysis (vendored from the
   `vcdtogglemeasure` project) producing metrics and the trace map;
-* `src/snippet.rs`: `atndecode` and `make` steps;
+* `src/snippet.rs`: `atndecode`, ISA gate and `make` steps;
+* `src/isagate/`: built-in ISA gate (`machine.rs` is the ISA model, `gate.rs`
+  classifies and replays each program line and places the branch labels);
 * `src/feedback.rs`: trace-map coverage feedback with a numeric best score;
 * `src/measurement.rs`, `src/scope.rs`: scope commands and VISA connection;
 * `src/openocd.rs`: OpenOCD Tcl client;

@@ -1,7 +1,16 @@
 //! Snippet build: pipes the input bitstream into `atndecode` to decode RISC-V
-//! assembly, writes it as `src/snippet.S` in the assembly environment, and runs
-//! `make` there to produce `snippet.elf`. The decoded assembly is kept so it can be
-//! saved next to interesting inputs.
+//! assembly, validates and fixes the decoded program with the built-in ISA gate
+//! (`src/isagate/`), writes it as `src/snippet.S` in the assembly environment
+//! (preceded by the required `#include "init.inc"`), and runs `make` there to
+//! produce `snippet.elf`. The fixed assembly is kept so it can be saved next to
+//! interesting inputs.
+
+/// Prepended to every generated snippet. The assembly environment's `init.inc`
+/// provides the machine init: the linker script enters at `_init`, which sets
+/// `mtvec`, PMP, SATP, delegates traps, enables the FPU and loads `gp`, then
+/// falls through into the snippet body. Without it, float instructions trap
+/// (FS is off) and arbitrary memory accesses trap (no PMP/SATP setup).
+const SNIPPET_INIT_INCLUDE: &str = "#include \"init.inc\"\n\n";
 
 use std::{
     fmt, io,
@@ -29,6 +38,8 @@ fn absolute(path: &Path) -> PathBuf {
 #[derive(Debug)]
 pub enum BuildError {
     Decode(String),
+    /// The built-in ISA gate could not fix the decoded program; the input is skipped.
+    Gate(String),
     Make(String),
     Io {
         /// The operation and paths that failed, e.g. `spawning decoder '/x' in '/y'`.
@@ -59,6 +70,7 @@ impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BuildError::Decode(m) => write!(f, "decode failed: {m}"),
+            BuildError::Gate(m) => write!(f, "ISA gate rejected the decoded snippet: {m}"),
             BuildError::Make(m) => write!(f, "make failed: {m}"),
             BuildError::Io { context, source } => match source {
                 Some(source) => write!(f, "I/O error while {context}: {source}"),
@@ -90,6 +102,8 @@ pub struct SnippetBuilder {
     archive_dir: Option<PathBuf>,
     /// Number of snippets decoded so far, used for the archive file names.
     count: u64,
+    /// Number of decoded programs the ISA gate rejected (unfixable) so far.
+    gate_rejections: u64,
     /// Assembly text of the last successful decode.
     last_assembly: Option<String>,
 }
@@ -110,6 +124,7 @@ impl SnippetBuilder {
             riscv_toolpath,
             archive_dir: None,
             count: 0,
+            gate_rejections: 0,
             last_assembly: None,
         }
     }
@@ -117,6 +132,11 @@ impl SnippetBuilder {
     /// Assembly text (with the `init.inc` include) of the last successful decode.
     pub fn last_assembly(&self) -> Option<&str> {
         self.last_assembly.as_deref()
+    }
+
+    /// How many decoded programs the ISA gate has rejected (unfixable) so far.
+    pub fn gate_rejections(&self) -> u64 {
+        self.gate_rejections
     }
 
     /// Also saves every decoded snippet in `dir` (created if missing).
@@ -139,7 +159,9 @@ impl SnippetBuilder {
         )
     }
 
-    /// Decodes `bitstream`, builds the snippet, and returns the path to the fresh ELF.
+    /// Decodes `bitstream`, runs the ISA gate on the decoded program, builds the
+    /// snippet, and returns the path to the fresh ELF. A program the gate cannot
+    /// fix is rejected (`BuildError::Gate`) and never built.
     pub fn build(&mut self, bitstream: &[u8]) -> Result<PathBuf, BuildError> {
         let elf = self.assembly_environment.join("snippet.elf");
         let src_dir = self.assembly_environment.join("src");
@@ -175,14 +197,34 @@ impl SnippetBuilder {
             )));
         }
         let start = Instant::now();
-        self.decode(bitstream)?;
+        let decoded_assembly = self.decode(bitstream)?;
         let decoded = start.elapsed();
+        // The built-in ISA gate validates and fixes the bare decoded program
+        // (memory operands, alignment, immediates, branch targets); the
+        // `init.inc` include is prepended only afterwards, so the gate only
+        // ever sees the program itself.
+        let fixed = match crate::isagate::gate(&decoded_assembly) {
+            Ok(fixed) => fixed,
+            Err(e) => {
+                self.gate_rejections += 1;
+                tracing::debug!(
+                    "ISA gate rejected input of {} bytes (rejections so far: {}): {e}",
+                    bitstream.len(),
+                    self.gate_rejections
+                );
+                return Err(BuildError::Gate(e.to_string()));
+            }
+        };
+        let source = format!("{SNIPPET_INIT_INCLUDE}{fixed}\n");
+        self.write_source(&source)?;
+        let written = start.elapsed() - decoded;
         self.make()?;
         tracing::debug!(
-            "Built {} (decode {:?}, make {:?})",
+            "Built {} (decode {:?}, gate+write {:?}, make {:?})",
             elf.display(),
             decoded,
-            start.elapsed() - decoded
+            written,
+            start.elapsed() - decoded - written
         );
 
         if !elf.is_file() {
@@ -194,9 +236,9 @@ impl SnippetBuilder {
         Ok(elf)
     }
 
-    /// Pipes the bitstream into `atndecode` and writes its stdout to `src/snippet.S`,
-    /// preceded by `#include "init.inc"`.
-    fn decode(&mut self, bitstream: &[u8]) -> Result<(), BuildError> {
+    /// Pipes the bitstream into `atndecode` and returns its stdout as the bare
+    /// decoded assembly (without the `init.inc` include).
+    fn decode(&mut self, bitstream: &[u8]) -> Result<String, BuildError> {
         tracing::debug!(
             "Running decoder {:?} in {:?} with {} bytes on stdin",
             self.atndecode_path,
@@ -263,20 +305,22 @@ impl SnippetBuilder {
             )));
         }
 
-        let assembly = format!(
-            "#include \"init.inc\"\n\n{}\n",
-            String::from_utf8_lossy(&out.stdout)
-        );
-        let source = self.assembly_environment.join("src").join("snippet.S");
-        std::fs::write(&source, &assembly).map_err(|e| {
-            BuildError::io(format!("writing assembly source {}", source.display()), e)
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Writes `source` to `src/snippet.S`, keeps it as the last assembly, and
+    /// archives a copy if an archive directory is configured.
+    fn write_source(&mut self, source: &str) -> Result<(), BuildError> {
+        let path = self.assembly_environment.join("src").join("snippet.S");
+        std::fs::write(&path, source).map_err(|e| {
+            BuildError::io(format!("writing assembly source {}", path.display()), e)
         })?;
 
         self.count += 1;
-        self.last_assembly = Some(assembly.clone());
+        self.last_assembly = Some(source.to_string());
         if let Some(dir) = &self.archive_dir {
             let copy = dir.join(format!("{:06}.S", self.count));
-            std::fs::write(&copy, &assembly).map_err(|e| {
+            std::fs::write(&copy, source).map_err(|e| {
                 BuildError::io(format!("writing snippet archive {}", copy.display()), e)
             })?;
             tracing::debug!("Saved snippet to {}", copy.display());
@@ -351,18 +395,31 @@ mod tests {
     #[test]
     fn builds_from_stdin() {
         let (dir, mut b) = env("/bin/cat", "snippet.elf: src/snippet.S\n\tcp $< $@\n");
-        let elf = b.build(b"nop\n").unwrap();
+        let elf = b.build(b"mv x1,x2\n").unwrap();
+        // The ISA gate labels every statement; the include is prepended after it.
         assert_eq!(
             std::fs::read_to_string(elf).unwrap(),
-            "#include \"init.inc\"\n\nnop\n\n"
+            "#include \"init.inc\"\n\n.Lbr0:\nmv x1,x2\n\n"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn gate_rejection_is_reported_and_counted() {
+        let (dir, mut b) = env("/bin/cat", "snippet.elf: src/snippet.S\n\tcp $< $@\n");
+        // `bogus` is not an instruction: the gate cannot fix it and rejects it.
+        assert!(matches!(b.build(b"bogus\n"), Err(BuildError::Gate(_))));
+        assert_eq!(b.gate_rejections(), 1);
+        // A rejected program is never written or built.
+        assert!(!dir.join("src").join("snippet.S").exists());
+        assert!(!dir.join("snippet.elf").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn make_receives_riscv_variable() {
         let (dir, mut b) = env("/bin/cat", "snippet.elf:\n\techo $$RISCV > $@\n");
-        let elf = b.build(b"x").unwrap();
+        let elf = b.build(b"mv x1,x2\n").unwrap();
         assert_eq!(std::fs::read_to_string(elf).unwrap().trim(), "/opt/riscv");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -379,7 +436,7 @@ mod tests {
     #[test]
     fn make_receives_tmpdir_inside_the_assembly_environment() {
         let (dir, mut b) = env("/bin/cat", "snippet.elf:\n\techo $$TMPDIR > $@\n");
-        let elf = b.build(b"x").unwrap();
+        let elf = b.build(b"mv x1,x2\n").unwrap();
         // The toolchain must not fall back to /tmp for its intermediate files.
         assert_eq!(
             std::fs::read_to_string(elf).unwrap().trim(),
@@ -393,17 +450,17 @@ mod tests {
         let (dir, b) = env("/bin/cat", "snippet.elf:\n\ttouch $@\n");
         let archive = dir.join("archive");
         let mut b = b.with_archive(archive.clone()).unwrap();
-        b.build(b"one").unwrap();
-        b.build(b"two").unwrap();
+        b.build(b"mv x1,x2\n").unwrap();
+        b.build(b"mv x3,x4\n").unwrap();
         assert!(
             std::fs::read_to_string(archive.join("000001.S"))
                 .unwrap()
-                .contains("one")
+                .contains("mv x1,x2")
         );
         assert!(
             std::fs::read_to_string(archive.join("000002.S"))
                 .unwrap()
-                .contains("two")
+                .contains("mv x3,x4")
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -420,7 +477,7 @@ mod tests {
         let (dir, mut b) = env("/bin/cat", "all:\n\tfalse\n");
         std::fs::write(dir.join("snippet.elf"), b"old").unwrap();
         // The stale ELF is never returned because a failed make is an error.
-        assert!(matches!(b.build(b"x"), Err(BuildError::Make(_))));
+        assert!(matches!(b.build(b"mv x1,x2\n"), Err(BuildError::Make(_))));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

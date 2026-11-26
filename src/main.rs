@@ -19,6 +19,7 @@ mod feedback;
 #[cfg(feature = "hardware")]
 mod hardware;
 mod harness;
+mod isagate;
 #[cfg(feature = "hardware")]
 mod measurement;
 #[cfg(feature = "hardware")]

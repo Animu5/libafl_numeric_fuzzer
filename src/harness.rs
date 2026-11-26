@@ -37,10 +37,11 @@ impl Harness {
             Ok(elf) => elf,
             Err(e) => {
                 tracing::warn!(
-                    "Skipping input of {} bytes (head {:02x?}): snippet build failed [{}]: {e}",
+                    "Skipping input of {} bytes (head {:02x?}): snippet build failed [{}]: {e} (ISA gate rejections so far: {})",
                     raw.len(),
                     head,
-                    self.builder.paths_summary()
+                    self.builder.paths_summary(),
+                    self.builder.gate_rejections()
                 );
                 return ExitKind::Ok;
             }
@@ -135,13 +136,22 @@ mod tests {
             }),
             shared: shared.clone(),
         };
-        harness.run(&BytesInput::new(b"first".to_vec()));
+        // /bin/cat passes the input through as the program; it must be a valid
+        // instruction line for the built-in ISA gate.
+        harness.run(&BytesInput::new(b"mv x1,x2\n".to_vec()));
         assert_eq!(
             shared.evaluation.borrow().as_ref().unwrap().score(),
             2.0
         );
-        assert!(shared.assembly.borrow().as_ref().unwrap().contains("first"));
-        harness.run(&BytesInput::new(b"second".to_vec()));
+        assert!(
+            shared
+                .assembly
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .contains("mv x1,x2")
+        );
+        harness.run(&BytesInput::new(b"mv x3,x4\n".to_vec()));
         assert!(shared.evaluation.borrow().is_none());
         assert!(shared.assembly.borrow().is_none());
         harness.builder =
@@ -151,7 +161,7 @@ mod tests {
         assert!(shared.assembly.borrow().is_none());
         assert_eq!(paths.borrow().len(), 2);
         harness.builder = SnippetBuilder::new(dir.clone(), "/bin/cat".into(), "/opt/riscv".into());
-        harness.run(&BytesInput::new(b"third".to_vec()));
+        harness.run(&BytesInput::new(b"mv x5,x6\n".to_vec()));
         assert!(shared.evaluation.borrow().is_none());
         assert_eq!(shared.fatal.borrow().as_deref(), Some("unrecoverable"));
         assert_eq!(paths.borrow().len(), 3);

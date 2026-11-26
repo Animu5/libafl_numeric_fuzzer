@@ -30,6 +30,9 @@ fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
         ),
     );
     fs::write(root.join("trace.vcd"), TRACE_VCD).unwrap();
+    // The seed is cat'ed verbatim as the program; it must pass the ISA gate.
+    let seed = root.join("seed");
+    fs::write(&seed, b"mv x1,x2\n").unwrap();
     let solutions = root.join("solutions");
     let log = root.join("fuzzer.log");
     let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
@@ -43,6 +46,8 @@ fn selected_simulation_builds_and_evaluates_a_seed_without_hardware() {
             "--solutions-path",
         ])
         .arg(&solutions)
+        .arg("--seed")
+        .arg(&seed)
         .arg("--log-file")
         .arg(&log)
         .arg("--simulator-path")
@@ -122,6 +127,9 @@ fn log_level_and_log_monitor_write_progress_to_the_log_file() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let simulator = simulation_fixture(root);
+    // The seed is cat'ed verbatim as the program; it must pass the ISA gate.
+    let seed = root.join("seed");
+    fs::write(&seed, b"mv x1,x2\n").unwrap();
     let solutions = root.join("solutions");
     let log = root.join("fuzzer.log");
     let mut child = Command::new(env!("CARGO_BIN_EXE_libafl_fuzzer"))
@@ -135,6 +143,8 @@ fn log_level_and_log_monitor_write_progress_to_the_log_file() {
             "--solutions-path",
         ])
         .arg(&solutions)
+        .arg("--seed")
+        .arg(&seed)
         .arg("--log-file")
         .arg(&log)
         .arg("--log-level")

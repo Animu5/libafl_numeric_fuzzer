@@ -12,6 +12,26 @@ Notable changes are summarized here. Earlier history is available in Git.
   the processes sharing the central log file can be told apart without the pid.
   The tag is a per-process global set at startup (`set_log_tag`) and rendered by
   a custom `FormatEvent` implementation (`TaggedFormat`) in `main.rs`.
+- Built-in ISA gate in the decode flow (backported from the `grammar` branch so
+  both input flows are comparable): every `atndecode`-decoded program is
+  validated and fixed in-process by the new `src/isagate/` module before it is
+  written as `src/snippet.S` — `machine.rs` is a Rust port of the Go
+  `RISCV64GMachine` ISA model (`atnwalk/grammars/emulator` in the
+  asltgen-afl-proxy project), `gate.rs` classifies each program line and
+  replays it on the machine, exactly like `atnwalk/cmd/isagate` there did
+  (memory offsets clamped into the valid range and realigned — a missing offset
+  counts as 0 per the RISC-V specification — `li xN, <valid address>` inserted
+  when the base register cannot hold one, immediates wrapped to their field
+  widths, including the `li` two-halves `Decode(2^32-1)` quirk). Every statement
+  gets a `.Lbr{j}:` label and each branch operand is rewritten to
+  `.Lbr{imm mod n}` (`imm` = the decoded branch immediate, `n` = statement
+  count), so the fuzz input picks a forward or backward target and gas
+  resolves the label against the real layout — with compressed (RVC)
+  instructions an absolute target PC could land mid-instruction and trap.
+  Unfixable programs are rejected and skipped (counted as ISA-gate rejections
+  in the debug log) and never built. The fixed program is what gets written,
+  built, measured and persisted; the `#include "init.inc"` line is prepended
+  after the gate, so the gate only ever sees the bare program.
 
 ## 0.10.1
 
